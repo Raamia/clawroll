@@ -1,0 +1,15 @@
+{
+  "name": "@clawroll/poker",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Pure No-Limit Hold'em game logic. Zero I/O, fully deterministic.",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  }
+}

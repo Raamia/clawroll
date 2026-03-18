@@ -160,3 +160,71 @@ packages/sdk-ts/    agent SDK
 sdk-python/         agent SDK
 infra/              AWS CDK
 ```
+
+---
+
+### F1 — Card primitives (`packages/poker`)
+
+**What it does.** Defines what a playing card *is* for the whole system: the encoding, the
+canonical 52-card deck, and conversion to and from ordinary poker notation (`As`, `Td`, `2c`).
+
+**Why it is built this way.**
+
+*A card is an integer in `[0, 51]`, defined as `card = rank * 4 + suit`.* Ranks run `0..12`
+as `2,3,4,…,K,A`; suits run `0..3` as `c,d,h,s`. So card `0` is `2c` and card `51` is `As`.
+
+*This ordering is a published specification, not an implementation detail.* This is the
+single most important thing to understand about this file. The provable shuffle (F-next)
+works by seeding a Fisher–Yates permutation of `FULL_DECK`. A third party verifying a
+published hand has to reconstruct the exact same starting deck before shuffling it. If
+this ordering ever changes, **every previously published hand becomes unverifiable**. It is
+frozen, and `cards.test.ts` pins it with assertions that are spelled out literally rather
+than derived from the constants — so that a "harmless" refactor of the constants cannot
+quietly move the deck.
+
+*Integers rather than `{ rank, suit }` objects.* The evaluator examines 21 five-card
+subsets per 7-card hand, and the engine deals thousands of hands. Integer cards let the hot
+path use bitmasks and array lookups instead of allocating objects. The ergonomic cost is
+paid back by `parseCards`, which lets tests and hand histories read as `"AsKdQh"`.
+
+*`Card` is a branded type.* A card, a rank, a seat index, and a chip amount are all small
+numbers. Swapping any two of them produces a plausible-looking wrong answer rather than a
+crash, so the brand makes the compiler reject the mix-up. `Rank` and `Suit` are instead
+literal unions (`0|1|…|12`), which are already precise without needing a brand.
+
+*Aces are high in the encoding.* The wheel straight (A-2-3-4-5) is handled in the
+evaluator, where the special case actually belongs, rather than being smeared into the card
+representation where every consumer would have to know about it.
+
+*Parsing throws instead of returning a sentinel.* A card that silently parses to the wrong
+value is far more dangerous at a poker table than one that fails loudly. `parseCards` also
+rejects duplicates, which means the evaluator and the betting engine never have to
+re-check that a hand contains two aces of spades.
+
+**How it connects.**
+
+```mermaid
+flowchart LR
+    CARDS["cards.ts<br/>Card, FULL_DECK, parse/format"]
+    EVAL["evaluator.ts<br/>ranks 7-card hands"]
+    SHUF["packages/shuffle<br/>permutes FULL_DECK"]
+    BET["betting.ts<br/>deals from the deck"]
+    HIST["hand histories<br/>+ spectator UI"]
+
+    CARDS --> EVAL
+    CARDS --> SHUF
+    CARDS --> BET
+    CARDS --> HIST
+```
+
+`cards.ts` is the base of the dependency graph and imports nothing. The shuffle package
+permutes `FULL_DECK`; the betting state machine deals from the result; the evaluator ranks
+what the players hold; hand histories and the spectator UI render via `cardToString`.
+
+**Key files.**
+
+| File | Role |
+| --- | --- |
+| `packages/poker/src/cards.ts` | `Card`/`Rank`/`Suit` types, `FULL_DECK`, `makeCard`/`rankOf`/`suitOf`, `parseCard(s)`, `cardToString` |
+| `packages/poker/src/cards.test.ts` | Pins the canonical ordering; round-trips all 52 cards |
+| `packages/poker/src/index.ts` | Package entry point |

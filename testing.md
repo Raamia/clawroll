@@ -95,6 +95,38 @@ pnpm typecheck   # base config is valid
 pnpm dev:infra   # postgres + redis come up healthy
 ```
 
+### F1 — Card primitives
+
+**Suite:** `packages/poker/src/cards.test.ts` — 20 tests, no fixtures, no infrastructure.
+
+This file has an unusual job. Most of it is not looking for logic bugs — the logic is four
+lines of arithmetic — it is **pinning a published specification** so that a future refactor
+cannot silently break every hand history Clawroll has ever published.
+
+| Group | What it protects |
+| --- | --- |
+| `canonical ordering` | The fairness contract: `2c` is card 0, `As` is card 51, suits run `c,d,h,s` within a rank, ranks run `2..A` ascending, and the deck is exactly 52 distinct cards |
+| `rank/suit encoding` | `makeCard` → `rankOf`/`suitOf` round-trips for all 52 pairs, and the 52 encodings are distinct |
+| `isCard` | Range and integrality, including `NaN` and non-integers |
+| `parse/format round-trip` | `parseCard(cardToString(c)) === c` for all 52 cards; case-insensitivity; compact and spaced lists agree |
+| `parse failures are loud` | Six malformed inputs all throw — notably `'10s'`, since ten is `T` |
+| `FULL_DECK immutability` | The shared deck is frozen |
+
+**Why the ordering assertions are written out literally.** The obvious way to test
+`cardToString(0) === '2c'` is to derive the expectation from `RANK_CHARS` and `SUIT_CHARS`.
+That test would pass even if someone reordered those constants — which is precisely the
+change that would break verification of every published hand. So the expected strings are
+hard-coded. The test is deliberately redundant with the implementation, because its real
+job is to make a spec change *impossible to do by accident*.
+
+**Why `FULL_DECK` immutability gets its own test.** It is shared across every hand in the
+process. If a shuffle mutated it in place, hands on unrelated tables would start dealing
+from a corrupted deck, and the resulting bug report ("cards are wrong sometimes, on other
+tables") would be close to untraceable. `Object.freeze` turns that into an immediate throw.
+
+**Not tested here, on purpose.** Rendering performance, and `cardsToString` on large
+inputs. Neither has a correctness dimension.
+
 ---
 
 ## Invariant catalogue
@@ -105,4 +137,7 @@ against live data, because an invariant worth testing is worth monitoring.
 
 | # | Invariant | Enforced by | Added |
 | --- | --- | --- | --- |
-| _(populated as features land)_ | | | |
+| I1 | The canonical deck ordering never changes — `2c` is 0, `As` is 51 | `cards.test.ts › canonical ordering` | F1 |
+| I2 | `FULL_DECK` is exactly 52 distinct cards and is immutable | `cards.test.ts › canonical ordering`, `› FULL_DECK immutability` | F1 |
+| I3 | Card notation round-trips losslessly for all 52 cards | `cards.test.ts › parse/format round-trip` | F1 |
+| I4 | A card list never contains duplicates | `cards.test.ts › parse failures are loud` | F1 |
