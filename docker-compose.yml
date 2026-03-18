@@ -1,0 +1,36 @@
+# Local development dependencies for Clawroll.
+# Mirrors what runs on AWS as RDS Postgres + ElastiCache Redis.
+#   pnpm dev:infra        start
+#   pnpm dev:infra:reset  wipe volumes and restart (destroys local data)
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: clawroll-postgres
+    environment:
+      POSTGRES_USER: clawroll
+      POSTGRES_PASSWORD: clawroll_dev
+      POSTGRES_DB: clawroll
+    ports:
+      - '5432:5432'
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U clawroll -d clawroll']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: clawroll-redis
+    ports:
+      - '6379:6379'
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  pgdata:
