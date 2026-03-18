@@ -127,6 +127,57 @@ tables") would be close to untraceable. `Object.freeze` turns that into an immed
 **Not tested here, on purpose.** Rendering performance, and `cardsToString` on large
 inputs. Neither has a correctness dimension.
 
+### F2 — Hand evaluator
+
+**Suite:** `packages/poker/src/evaluator.test.ts` — 37 tests, ~0.5s.
+
+The evaluator is the first component where hand-written examples genuinely cannot establish
+correctness. There are 133,784,560 distinct seven-card holdings; any set of examples a human
+writes will miss the case that matters. So this suite is built in three layers, each catching
+what the others cannot.
+
+**Layer 1 — worked examples.** Category detection for all nine categories, the nine-way
+ordering, kicker resolution to the third kicker, and the descriptions used in hand histories.
+These are the tests that fail with a legible message when something obvious breaks.
+
+**Layer 2 — exhaustive cross-validation.** *This is the strongest check in the file.* For
+20,000 random seven-card holdings, the suite computes the best hand by brute force over all
+21 five-card subsets and asserts it equals what the seven-card decision cascade returned.
+The cascade is a chain of interacting special cases (two sets making a full house, three
+pairs where the third pair is still a legal kicker, a flush that outranks the trips sitting
+next to it); brute force is obviously correct but slow. Checking the fast path against the
+obvious path over 20,000 hands is what makes the cascade trustworthy.
+
+**Layer 3 — statistical validation.** 200,000 random hands are classified and the category
+frequencies compared against published seven-card poker probabilities (straight flush
+0.031%, quads 0.168%, … pair 43.8%, high card 17.4%). This catches a class of bug the other
+two layers structurally cannot: a category being detected slightly too eagerly, or missed in
+a rare configuration, while every hand-written example still passes and brute force agrees
+because *both* implementations share the misunderstanding. Frequencies are independent of
+our code entirely — they come from combinatorics.
+
+**Determinism.** Both random layers use a seeded `mulberry32` PRNG rather than `Math.random`.
+A failure reproduces forever from the seed printed in the assertion message, and there are no
+flaky evaluator tests by construction.
+
+**Specific edge cases pinned:**
+
+| Case | Why it is easy to get wrong |
+| --- | --- |
+| The wheel (A-2-3-4-5) | The only place aces play low; must rank as five-high, below a six-high straight |
+| The steel wheel (5s4s3s2sAs) | Same, for straight flushes |
+| `QcKdAh2s3c` is *not* a straight | The naive "ace wraps" bug |
+| Two sets → full house | Seven cards can hold 3+3; the lower set plays as the pair |
+| Three pairs → the third pair kicks | With 3 pairs the third pair's rank is still the best available kicker |
+| `AcKcQcJc9c` beats `AcKcQcJc8c` | The fifth flush card plays; it is not a tie |
+| Identical ranks, different suits | Must be exactly `0` — suits never break ties in Hold'em |
+
+**A bug this suite found.** During development the exhaustive layer passed while a
+hand-written example failed — and the *test* turned out to be wrong, not the code
+(`2c2d2h` is trip deuces, not quads, so the flush correctly played). That is the layered
+design working as intended: brute force is the authority, and a disagreeing example is
+evidence about the example.
+
 ---
 
 ## Invariant catalogue
@@ -141,3 +192,6 @@ against live data, because an invariant worth testing is worth monitoring.
 | I2 | `FULL_DECK` is exactly 52 distinct cards and is immutable | `cards.test.ts › canonical ordering`, `› FULL_DECK immutability` | F1 |
 | I3 | Card notation round-trips losslessly for all 52 cards | `cards.test.ts › parse/format round-trip` | F1 |
 | I4 | A card list never contains duplicates | `cards.test.ts › parse failures are loud` | F1 |
+| I5 | The best five of seven cards always equals brute force over all 21 subsets | `evaluator.test.ts › agrees with an exhaustive search` | F2 |
+| I6 | Hand categories occur at their true combinatorial frequencies | `evaluator.test.ts › category frequencies` | F2 |
+| I7 | Equal hand scores mean a genuine tie — suits never break ties | `evaluator.test.ts › kickers` | F2 |

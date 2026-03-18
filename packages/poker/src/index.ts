@@ -11,3 +11,4 @@
  * rewind, and game-logic tests that need no infrastructure and never flake.
  */
 export * from './cards.js';
+export * from './evaluator.js';

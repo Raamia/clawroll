@@ -228,3 +228,76 @@ what the players hold; hand histories and the spectator UI render via `cardToStr
 | `packages/poker/src/cards.ts` | `Card`/`Rank`/`Suit` types, `FULL_DECK`, `makeCard`/`rankOf`/`suitOf`, `parseCard(s)`, `cardToString` |
 | `packages/poker/src/cards.test.ts` | Pins the canonical ordering; round-trips all 52 cards |
 | `packages/poker/src/index.ts` | Package entry point |
+
+---
+
+### F2 — Hand evaluator (`packages/poker`)
+
+**What it does.** Ranks any 5, 6, or 7 card holding, returning a single integer that can be
+compared directly. Also produces the human-readable description used in hand histories
+("Full House, Ks full of 9s").
+
+**Why it is built this way.**
+
+*Ranking collapses to one comparable integer.* `evaluate()` packs a hand into 24 bits:
+
+```
+  bits 23..20   category (0 = high card … 8 = straight flush)
+  bits 19..16   most significant rank
+  bits 15..12   next rank
+  bits 11.. 8   next rank
+  bits  7.. 4   next rank
+  bits  3.. 0   least significant rank
+```
+
+Two hands then compare with a plain `a.score - b.score`, and **equal scores mean a genuine
+tie that must chop the pot**. This is the point: it lets the showdown code sort by score and
+split on equality, holding no poker knowledge of its own. All the rules live in one file.
+
+*Padding unused slots with `0` is safe*, even though `0` is a real rank (a deuce). The number
+of meaningful slots is fixed per category — two flushes always compare five, two full houses
+always compare two — so a padded slot is only ever compared against another padded slot.
+
+*Counting, not lookup tables.* The classic fast evaluators (Cactus Kev, Two-Plus-Two) trade a
+multi-megabyte generated table for a few array reads. We do not need that. This is one pass
+building rank counts and per-suit bitmasks, then a decision cascade — a few hundred
+nanoseconds, thousands of times faster than the network round-trip to the agent that
+precedes it. In exchange the code is readable, needs no build step, and can be checked
+against brute force. Swapping in a table-driven core behind the same signature stays a
+contained change if profiling ever justifies it.
+
+*The wheel is handled by widening the mask, not by a special case.* A-2-3-4-5 is the only
+place aces play low. Instead of branching for it, `straightHigh` widens the 13-bit rank mask
+into 14 bits where bit 0 means "ace playing low". The ordinary sliding-window scan then finds
+the wheel for free and correctly reports its high card as a five. One code path, not two.
+
+*`straightHigh` returns `null`, not `-1`.* TypeScript narrows numeric literal unions only
+through equality, never through `>= 0`. A `-1` sentinel therefore stays inside the `Rank`
+type at every call site, and the compiler will happily let it flow into a rank lookup. This
+was caught by `pnpm typecheck` during development, and is exactly what the strict compiler
+settings from F0 are there for.
+
+*Duplicate cards are not re-checked here.* `parseCards` and the dealing code guarantee
+uniqueness upstream; re-validating on every evaluation would cost more than the bug it
+defends against.
+
+**How it connects.**
+
+```mermaid
+flowchart LR
+    CARDS["cards.ts"] --> EVAL["evaluator.ts<br/>evaluate() → HandValue"]
+    EVAL --> SHOWDOWN["showdown<br/>sort by score, split on ties"]
+    EVAL --> DESC["describeHand()<br/>→ hand histories, spectator UI"]
+    SHOWDOWN --> POTS["side pots<br/>resolve each pot independently"]
+```
+
+The showdown resolves each side pot by evaluating every eligible player's seven cards,
+taking the maximum score, and splitting among everyone who ties it. Because ties are exact
+integer equality, chop detection needs no tolerance or special handling.
+
+**Key files.**
+
+| File | Role |
+| --- | --- |
+| `packages/poker/src/evaluator.ts` | `evaluate()`, `compareHands()`, `describeHand()`, `HandCategory` |
+| `packages/poker/src/evaluator.test.ts` | Exhaustive 21-subset validation, category frequencies, kicker rules |
