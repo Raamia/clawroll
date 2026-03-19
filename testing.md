@@ -218,6 +218,45 @@ ante in the hand. The conservation test made it immediate and obvious.
 If it shuffled or spliced in place, the caller's deck — the one recorded for verification —
 would no longer match the hand that was dealt.
 
+### F4 — Betting state machine
+
+**Suite:** `packages/poker/src/betting.test.ts` — 30 tests.
+
+The tests are written against a `play(state, actions)` helper that applies a script of actions
+to whoever is currently to act, failing loudly if nobody is. Scripts read like hand histories,
+which keeps the tests legible even when the situation is intricate.
+
+| Group | What it protects |
+| --- | --- |
+| `legal actions` | The BB's preflop option; the 2BB opening minimum; call amounts net of chips already in; a short stack shoving below the normal minimum |
+| `street progression` | Preflop→flop→turn→river→showdown; burn-card deck accounting; postflop action starting left of the button; the heads-up inversion; street resets |
+| `folding` | Hand ends when everyone folds to one player; folded seats are skipped |
+| `all-in short of a full raise` | The seat that already acted may call but not raise; `lastRaiseIncrement` survives a short shove; a full raise does reopen |
+| `all-in run-outs` | Board runs out when everyone is all-in; betting continues when one player still has chips behind |
+| `illegal actions throw` | Eight distinct illegal actions, each with a specific error |
+| `immutability and conservation` | Input state is never mutated; chips are conserved after *every single action* |
+
+**The test that matters most.** `denies a raise to a player who already acted` builds a
+four-handed pot where the button raises to 400 (a 300 increment), two players call, and a
+short stack then shoves its last 460 — an increment of only 60 against a required 300. The
+suite then asserts all four consequences: the shove is legal, `betToCall` rises to 460,
+`lastRaiseIncrement` **stays at 300** rather than dropping to 60, and the button — who already
+acted — may call 60 but is refused a raise. Getting three of those four right and the fourth
+wrong is a very plausible implementation, and it would let a player illegally re-raise off an
+under-sized all-in.
+
+**Why chip conservation is asserted after every action, not just at the end.** A hand that
+loses chips on the turn and gains them back on the river would pass an end-state check. The
+per-action assertion localises any leak to the exact action that caused it.
+
+**Why deck indices are asserted explicitly.** The burn-card test walks the whole hand
+asserting `deckIndex` is 10, then 12, then 14. These constants encode the burn rule. If burns
+were dropped, every hand would still play correctly and every other test would still pass —
+but the board would no longer match what a verifier computes from the seed.
+
+**Immutability is tested by JSON snapshot** before and after an action. The engine keeps prior
+states for replay and broadcast; in-place mutation would corrupt already-published history.
+
 ---
 
 ## Invariant catalogue
@@ -239,3 +278,9 @@ against live data, because an invariant worth testing is worth monitoring.
 | I9 | Hole cards are dealt one at a time from the small blind, two passes | `handState.test.ts › hole card dealing` | F3 |
 | I10 | A player can never be pushed below a zero stack | `handState.test.ts › blind posting` | F3 |
 | I11 | The shuffled deck handed to `startHand` is never mutated | `handState.test.ts › hole card dealing` | F3 |
+| I12 | Chips are conserved after every individual action, not just per hand | `betting.test.ts › immutability and conservation` | F4 |
+| I13 | An all-in short of a full raise never reopens the betting | `betting.test.ts › all-in short of a full raise` | F4 |
+| I14 | The big blind always gets its preflop option to raise | `betting.test.ts › legal actions` | F4 |
+| I15 | An illegal action always throws — never coerced, never ignored | `betting.test.ts › illegal actions throw` | F4 |
+| I16 | One card is burned before the flop, turn and river | `betting.test.ts › street progression` | F4 |
+| I17 | `applyAction` never mutates the state it was given | `betting.test.ts › immutability and conservation` | F4 |

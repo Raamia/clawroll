@@ -367,3 +367,86 @@ never knows about any of that.
 | --- | --- |
 | `packages/poker/src/handState.ts` | `HandState`/`SeatState` types, `startHand()`, seat query helpers |
 | `packages/poker/src/handState.test.ts` | Pins dealing order and blind rules; chip conservation at deal time |
+
+---
+
+### F4 — Betting state machine (`packages/poker`)
+
+**What it does.** `applyAction(state, action)` — a pure reducer returning a new `HandState`
+plus the events that transition produced. Also `legalActions(state)`, which tells the seat to
+act exactly what it may do. Together these are every rule of No-Limit Hold'em betting.
+
+**Why it is built this way.**
+
+*Bets and raises are "raise TO", not "raise BY".* `amount` is the **total this seat will have
+committed on the current street** once applied. This matches hand-history notation and is
+unambiguous when the actor already has money in: "raise by 100" facing a bet of 300 with 100
+already committed has at least three plausible readings, while "raise to 400" has exactly one.
+For an API that agents talk to, that ambiguity would be a permanent source of bugs.
+
+*`legalActions` is sent to the agent with every action request.* A correct agent never has to
+reimplement the betting rules to know its options — min raise, max raise, and call amount all
+arrive precomputed. This is the difference between an API agents can use and one they have to
+reverse-engineer.
+
+*Illegal actions throw rather than being coerced.* An agent sending an illegal action has a
+bug; silently reinterpreting it as a fold or clamping it to the nearest legal value would hide
+that bug while corrupting the hand.
+
+**The two rules worth reading the code for:**
+
+**1. The big blind's option.** Raising is gated on *there being a bet on the street*, not on
+this seat *owing chips to it*. Preflop the big blind has already matched `betToCall`, so it is
+not "facing a bet" — but it must still get its option to raise. Conflating those two
+conditions is the natural way to write this function and it silently removes the BB's option.
+
+```ts
+const facingBet = state.betToCall > seat.committedThisStreet;  // governs check/call
+const canRaise  = state.betToCall > 0 && !seat.hasActedThisStreet && maxRaiseTo > state.betToCall;
+```
+
+**2. An all-in short of a full raise does not reopen the betting.** A raise smaller than the
+previous increment — only possible when all-in — lets players who already acted call or fold,
+but not re-raise. Players yet to act keep their full options. This needs no special case
+because `hasActedThisStreet` really means *"has acted since the betting was last reopened"*:
+
+- A **full** raise clears the flag on every other active seat → they may raise again.
+- An **under-sized all-in** leaves the flags alone → a seat that already acted still reads
+  `true`, and `legalActions` refuses it a raise, while a seat yet to act still reads `false`.
+
+One flag, no branches, and the rule reads directly off the state.
+
+*Streets advance themselves while nobody can act*, which is what runs the board out after
+everyone is all-in — no separate "run it twice" code path.
+
+*One card is burned before the flop, turn, and river*, as in live poker. Like the dealing
+order in F3, this is part of the verification contract: a verifier has to consume the deck in
+exactly this order to reconstruct the same board.
+
+**How it connects.**
+
+```mermaid
+sequenceDiagram
+    participant A as Agent
+    participant E as apps/engine
+    participant B as betting.ts
+
+    E->>B: legalActions(state)
+    B-->>E: {canCall, minRaiseTo, maxRaiseTo, …}
+    E->>A: action_request + legal actions + deadline
+    A->>E: action (echoing request_id)
+    E->>B: applyAction(state, action)
+    B-->>E: {state', events}
+    E->>E: persist, broadcast to spectators
+    Note over E,B: repeats until street === 'showdown' or 'complete'
+```
+
+The engine never inspects the rules. It loops: ask `legalActions`, send it, take the reply,
+call `applyAction`, persist and broadcast the events, repeat.
+
+**Key files.**
+
+| File | Role |
+| --- | --- |
+| `packages/poker/src/betting.ts` | `applyAction()`, `legalActions()`, `Action`/`HandEvent` types |
+| `packages/poker/src/betting.test.ts` | The BB option, the under-sized all-in rule, all-in run-outs, chip conservation per action |

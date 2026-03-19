@@ -13,3 +13,4 @@
 export * from './cards.js';
 export * from './evaluator.js';
 export * from './handState.js';
+export * from './betting.js';
