@@ -301,3 +301,69 @@ integer equality, chop detection needs no tolerance or special handling.
 | --- | --- |
 | `packages/poker/src/evaluator.ts` | `evaluate()`, `compareHands()`, `describeHand()`, `HandCategory` |
 | `packages/poker/src/evaluator.test.ts` | Exhaustive 21-subset validation, category frequencies, kicker rules |
+
+---
+
+### F3 — Hand state model and dealing (`packages/poker`)
+
+**What it does.** Defines the shape of a hand in progress (`HandState`, `SeatState`) and
+implements `startHand()`: validate the setup, post antes and blinds, deal hole cards, and
+work out who acts first.
+
+**Why it is built this way.**
+
+*Chips are integers of micro-USDC, everywhere.* 1 USDC = 1,000,000. Table stakes use the
+exact unit the ledger uses, so a buy-in, a bet, and a ledger entry are the same number with
+no conversion — and therefore no rounding anywhere in the system. Postgres stores these as
+`BIGINT`; TypeScript handles them as `number`, exact below 2^53 (~9 billion USDC). A poker
+table will not get near that.
+
+*Dealing order is part of the verification contract.* Hole cards go out **one at a time,
+around the table starting from the small blind, for two passes** — exactly as a live dealer
+would. This is not cosmetic. A verifier reconstructs the deck from the revealed seed and has
+to arrive at the same hole cards the published hand claims. Dealing two cards to each player
+in turn instead of one-at-a-time produces a completely different assignment *from the
+identical deck*. Like the card ordering in F1, treat it as frozen; `handState.test.ts`
+pins the exact cards each seat receives from an unshuffled deck.
+
+*Two separate commitment counters per seat.* `committedThisStreet` drives "what do I need to
+call", and resets each street. `committedTotal` accumulates across the whole hand and is what
+side pots are derived from. Trying to serve both from one field is the root cause of most
+broken side-pot implementations.
+
+*Antes go straight into `pot`, not into `committedThisStreet`.* Paying an ante must not count
+toward matching a later bet. But zeroing the field after collecting them would drop the money
+out of every pot total in the hand — a bug that was caught here by the chip-conservation test
+before the code ever ran.
+
+*`hasActedThisStreet` is per-seat, not a global counter.* This is what makes the "an all-in
+short of a full raise does not reopen the betting" rule expressible in F4: a full raise
+clears the flag for everyone else, an under-sized all-in does not.
+
+*The heads-up blind inversion is stated explicitly.* Heads-up, the button **is** the small
+blind, acts first preflop, and acts last on every later street. It is the single most
+commonly mis-implemented rule in Hold'em, so it is written as a named special case rather
+than something a reader has to derive.
+
+**How it connects.**
+
+```mermaid
+flowchart LR
+    SHUF["packages/shuffle<br/>shuffled deck"] --> START["startHand(config)"]
+    START --> STATE["HandState<br/>(immutable snapshot)"]
+    STATE --> REDUCE["applyAction()<br/>F4"]
+    REDUCE --> STATE
+    STATE --> POTS["side pots + showdown<br/>F5"]
+    STATE --> ENGINE["apps/engine<br/>persists + broadcasts"]
+```
+
+`HandState` is deeply readonly and every transition returns a new value. The engine keeps the
+current state in memory, persists each transition, and broadcasts it — but the state itself
+never knows about any of that.
+
+**Key files.**
+
+| File | Role |
+| --- | --- |
+| `packages/poker/src/handState.ts` | `HandState`/`SeatState` types, `startHand()`, seat query helpers |
+| `packages/poker/src/handState.test.ts` | Pins dealing order and blind rules; chip conservation at deal time |

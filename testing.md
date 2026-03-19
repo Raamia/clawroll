@@ -178,6 +178,46 @@ hand-written example failed — and the *test* turned out to be wrong, not the c
 design working as intended: brute force is the authority, and a disagreeing example is
 evidence about the example.
 
+### F3 — Hand state and dealing
+
+**Suite:** `packages/poker/src/handState.test.ts` — 31 tests, no infrastructure.
+
+Two jobs: pin the parts of dealing that are a **published contract**, and establish the
+chip-conservation invariant that every later feature will be measured against.
+
+| Group | What it protects |
+| --- | --- |
+| `blind posting` | Clockwise blinds; the heads-up inversion; blinds deducted from stacks; a short blind goes all-in rather than into debt |
+| `first to act` | Left of the big blind multi-way; the button heads-up; nobody to act when the blinds put everyone all-in |
+| `hole card dealing` | The exact deal order, deck consumption, distinct cards, and that the input deck is never mutated |
+| `antes` | Antes reach the pot without counting as a street bet |
+| `chip conservation` | Stacks + pot equals the starting total, 2- through 9-handed |
+| `nextSeatWhere` | Wrap-around, never returning the starting seat, predicate filtering |
+| `config validation` | Six malformed configs plus non-integer stacks and duplicate player IDs |
+
+**Why the dealing test hard-codes specific cards.** With an unshuffled `FULL_DECK` and the
+button on seat 0, the test asserts seat 1 holds exactly `2c 2s`, seat 2 holds `2d 3c`, and
+seat 0 holds `2h 3d`. Those strings encode the whole one-at-a-time-from-the-small-blind
+rule. If someone "simplifies" dealing to two cards per player in a single pass, the deck is
+identical, every other test still passes, no chips go missing — and **every published hand
+history becomes unverifiable**, because a third party reconstructing the deck from the seed
+would compute different hole cards. This test is the only thing standing between that
+refactor and a silent break of the fairness guarantee.
+
+**Why chip conservation appears this early.** It is the invariant that will eventually catch
+side-pot bugs, and side pots are where poker engines die. Establishing it at deal time —
+before any betting exists — means that when it later fails, the bug is unambiguously in the
+new code rather than in the setup.
+
+**A bug this suite caught before the code ever ran.** Antes are committed and then removed
+from `committedThisStreet` so they do not count toward matching a bet. The first
+implementation zeroed the field without adding the money to `pot`, silently destroying every
+ante in the hand. The conservation test made it immediate and obvious.
+
+**Non-mutation is tested explicitly.** `startHand` receives the shuffled deck by reference.
+If it shuffled or spliced in place, the caller's deck — the one recorded for verification —
+would no longer match the hand that was dealt.
+
 ---
 
 ## Invariant catalogue
@@ -195,3 +235,7 @@ against live data, because an invariant worth testing is worth monitoring.
 | I5 | The best five of seven cards always equals brute force over all 21 subsets | `evaluator.test.ts › agrees with an exhaustive search` | F2 |
 | I6 | Hand categories occur at their true combinatorial frequencies | `evaluator.test.ts › category frequencies` | F2 |
 | I7 | Equal hand scores mean a genuine tie — suits never break ties | `evaluator.test.ts › kickers` | F2 |
+| I8 | Stacks + pot always equals the chips players started with | `handState.test.ts › chip conservation` | F3 |
+| I9 | Hole cards are dealt one at a time from the small blind, two passes | `handState.test.ts › hole card dealing` | F3 |
+| I10 | A player can never be pushed below a zero stack | `handState.test.ts › blind posting` | F3 |
+| I11 | The shuffled deck handed to `startHand` is never mutated | `handState.test.ts › hole card dealing` | F3 |
