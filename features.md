@@ -623,3 +623,71 @@ must walk the deck in exactly the same order to arrive at the same hole cards an
 | --- | --- |
 | `packages/shuffle/src/shuffle.ts` | `createCommitment()`, `deriveFinalSeed()`, `shuffleDeck()`, `SeedStream` |
 | `packages/shuffle/src/shuffle.test.ts` | Commitment binding, seat binding, rejection-sampling boundary, chi-square uniformity |
+
+---
+
+### F7 — Standalone verifier and `clawroll-verify` CLI (`packages/shuffle`)
+
+**What it does.** Takes the facts Clawroll publishes for a finished hand, recomputes the
+deck from scratch, and checks it against the cards that were actually dealt. Ships as both a
+library (`verifyHand`) and a command-line tool anyone can run.
+
+```
+$ clawroll-verify hand-12345.json
+VERIFIED — this hand was dealt from the committed seed
+
+  PASS  commitment — revealed seed matches the commitment published before the deal
+  PASS  deck — recomputed a 52-card deck, first five 6h Td Js Qd 4c
+  PASS  hole:seat0 — Js Tc as published
+  PASS  board — 8c 8d 2s Th Jd as published
+```
+
+Exit code 0 verified, 1 not — so it drops straight into a script or a CI job.
+
+**Why it deliberately does not reuse the engine's dealing code.** `reconstructDeal`
+re-implements the dealing contract — one card at a time from the small blind for two passes,
+then burn-one-deal-three and burn-one-deal-one twice — rather than importing `startHand`
+from `@clawroll/poker`.
+
+That looks like duplication. It is the point. **A verifier that calls the same function the
+dealer called cannot detect a change in that function** — it agrees with the engine by
+construction, including when the engine is wrong. Two independent implementations, plus
+tests asserting they agree across 2/3/4/6/9-handed tables and every button position, is a
+materially stronger guarantee than one shared helper. It also makes this one file a complete,
+readable statement of the dealing spec for anyone porting the verifier to another language.
+
+**What the commitment check actually proves.** That the revealed `serverSeed` is the one
+committed to before the deal — so the server could not have looked at client entropy and
+then picked a seed producing a deck it liked. Everything else (hole cards, board) merely
+confirms the deck was then used as claimed. If only one check could run, it would be this one.
+
+**Checks are graded, not all-or-nothing.** A proof carrying only seeds and a commitment
+still verifies the binding; supplying seats, button, hole cards and board additionally checks
+the cards. Every check reports its own pass/fail with a readable reason, so a failure says
+*which* card diverged rather than just "invalid".
+
+**The CLI is standalone on purpose.** Nobody should have to take Clawroll's word about a
+Clawroll deal — including people who do not trust Clawroll's own website to report on
+Clawroll honestly. Reading from stdin means `curl … | clawroll-verify` works against a
+published proof without touching our code at all.
+
+**How it connects.**
+
+```mermaid
+flowchart LR
+    HIST["published hand history<br/>(S3 / CloudFront)"] --> PROOF["proof JSON<br/>commit, serverSeed, clientSeeds,<br/>seats, button, holeCards, board"]
+    PROOF --> CLI["clawroll-verify"]
+    CLI --> SHUF["shuffleDeck()<br/>recompute the deck"]
+    CLI --> RECON["reconstructDeal()<br/>independent dealing spec"]
+    SHUF --> VERDICT["VERIFIED / FAILED<br/>exit 0 / 1"]
+    RECON --> VERDICT
+    ENGINE["apps/engine"] -.->|cross-checked in tests| RECON
+```
+
+**Key files.**
+
+| File | Role |
+| --- | --- |
+| `packages/shuffle/src/verify.ts` | `verifyHand()`, `reconstructDeal()`, `formatResult()` |
+| `packages/shuffle/src/cli.ts` | `clawroll-verify` entry point, file or stdin |
+| `packages/shuffle/src/verify.test.ts` | Engine cross-check, tamper detection, partial proofs |

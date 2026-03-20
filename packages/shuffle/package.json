@@ -9,8 +9,12 @@
   "exports": {
     ".": "./src/index.ts"
   },
+  "bin": {
+    "clawroll-verify": "./src/cli.ts"
+  },
   "scripts": {
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "verify": "tsx ./src/cli.ts"
   },
   "dependencies": {
     "@clawroll/poker": "workspace:*"

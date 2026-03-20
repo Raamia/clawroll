@@ -7,3 +7,4 @@
  * and the seed is published when the hand ends so anyone can recompute the deck.
  */
 export * from './shuffle.js';
+export * from './verify.js';

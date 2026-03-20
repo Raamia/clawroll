@@ -356,6 +356,44 @@ after launch would have been a breaking change to the verification spec.
 **Not tested here.** Shuffle throughput. We draw a few hundred bytes per hand; the network
 round-trip to an agent dwarfs it entirely.
 
+### F7 — Verifier and CLI
+
+**Suite:** `packages/shuffle/src/verify.test.ts` — 25 tests, ~20ms.
+
+| Group | What it protects |
+| --- | --- |
+| `the verifier agrees with the engine` | `reconstructDeal` matches `startHand` for hole cards 2/3/4/6/9-handed at every button position, and matches the played-out board including burns |
+| `commitment verification` | Valid seed accepted; mismatched seed rejected; malformed seed fails without throwing; commitment comparison is case-insensitive |
+| `card verification` | Tampered hole cards and boards caught; partial boards accepted; seeds-only proofs verify; missing seats/button reported |
+| `reconstructDeal validation` | Fewer than two seats, an unseated button, and card distinctness |
+| `result formatting` | Human-readable verdict and per-check lines |
+
+**The cross-check group is the whole reason the duplication exists.** `reconstructDeal` is a
+second, independent implementation of the dealing contract. Tests then assert it produces
+byte-identical hole cards to `startHand` across five table sizes × every button position, and
+an identical five-card board after playing a hand to showdown. If either implementation
+drifts — someone "simplifies" dealing, or drops a burn card — these fail immediately.
+
+A verifier that imported `startHand` would pass all of those trivially and detect nothing.
+That is the trap this design avoids: **agreement by construction is not evidence.**
+
+**Tamper detection is tested by actually tampering.** The suite substitutes a wrong
+`serverSeed` and asserts the commitment check fails *and* that the reported hole cards and
+board diverge — reproducing precisely the cheat the protocol exists to prevent (server sees
+client entropy, then reveals a seed producing a deck it prefers).
+
+**Verified end to end by hand as well:**
+
+```bash
+npx tsx packages/shuffle/src/cli.ts hand.json     # exit 0, all PASS
+```
+
+with a tampered copy exiting 1 and naming every card that diverged.
+
+**Malformed input must not throw.** `verifyHand` on a garbage seed returns a failed result
+rather than raising. A verifier that crashes on bad input is one a hostile party can make
+look inconclusive rather than negative.
+
 ---
 
 ## Invariant catalogue
@@ -395,3 +433,7 @@ against live data, because an invariant worth testing is worth monitoring.
 | I27 | Every shuffle is a permutation of exactly 52 distinct cards | `shuffle.test.ts › deck production` | F6 |
 | I28 | Index selection is free of modulo bias — all 52! permutations equally likely | `shuffle.test.ts › rejection sampling`, `› statistical uniformity` | F6 |
 | I29 | A server seed is never reused across hands | `shuffle.test.ts › never repeats a server seed` | F6 |
+| I30 | The independent verifier and the engine deal identical cards | `verify.test.ts › the verifier agrees with the engine` | F7 |
+| I31 | A revealed seed that does not match its commitment always fails verification | `verify.test.ts › commitment verification` | F7 |
+| I32 | Any tampered hole card or board is detected and named | `verify.test.ts › card verification` | F7 |
+| I33 | Malformed proof input returns a failed result, never an exception | `verify.test.ts › rejects a malformed server seed without throwing` | F7 |
