@@ -276,6 +276,29 @@ describe('illegal actions throw', () => {
   it('rejects a bet when there is already a bet to face', () => {
     expect(() => applyAction(fresh(), { type: 'bet', seat: 0, amount: 500 })).toThrow(/cannot bet/);
   });
+
+  it('rejects a fold when the seat could check for free', () => {
+    // Regression: a 5000-hand fuzz run destroyed 1510 chips through this. Two
+    // players built a side pot an all-in third player was not eligible for, then
+    // both folded — one of them folding when it could have checked — leaving a pot
+    // with no eligible winner. Folding what you can check is always irrational and
+    // is the only way to orphan a side pot, so it is now illegal.
+    const flop = play(fresh(), [{ type: 'call' }, { type: 'call' }, { type: 'check' }]);
+    expect(flop.street).toBe('flop');
+    expect(legalActions(flop)!.canCheck).toBe(true);
+    expect(legalActions(flop)!.canFold).toBe(false);
+    expect(() => applyAction(flop, { type: 'fold', seat: flop.actingSeat! })).toThrow(
+      /cannot fold when it can check/,
+    );
+  });
+
+  it('still allows folding the big blind option is not offered', () => {
+    // The big blind facing no raise has matched betToCall, so it may check or
+    // raise but not fold — the pot is already free to contest.
+    const s = play(fresh(), [{ type: 'call' }, { type: 'call' }]);
+    expect(s.actingSeat).toBe(2);
+    expect(legalActions(s)!.canFold).toBe(false);
+  });
 });
 
 describe('immutability and conservation', () => {

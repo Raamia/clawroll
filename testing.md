@@ -257,6 +257,60 @@ but the board would no longer match what a verifier computes from the seed.
 **Immutability is tested by JSON snapshot** before and after an action. The engine keeps prior
 states for replay and broadcast; in-place mutation would corrupt already-published history.
 
+### F5 — Side pots and showdown
+
+**Suite:** `packages/poker/src/showdown.test.ts` — 16 tests, ~0.6s.
+
+Side pots are where poker engines die, so this suite is the most adversarial in the package.
+
+| Group | What it protects |
+| --- | --- |
+| `pot derivation` | One pot when nobody is all-in; correct tier slicing; folded players' chips stay while their eligibility goes; a folded player who contributed *more* than a live one; order-independence |
+| `showdown resolution` | Better hand wins; exact ties chop; odd chips; hole cards never revealed on a fold-out; uncalled bets refunded; unfinished hands refused |
+| `three-way all-in` | Each pot resolved against its own eligible field, short stack winning only the main pot |
+| `random hands` | 5000 fuzzed hands conserve chips; every hand terminates |
+
+**The headline test.** `plays 5000 random hands without creating or destroying a chip` deals
+2–9 seats with random stacks between 1BB and 3000, plays uniformly random *legal* actions
+until nobody can act, settles, and asserts the chips out equal the chips in. Random stacks
+make uneven all-ins — and therefore side pots and odd chips — extremely common.
+
+**Why the fuzzer asserts on its own coverage.** It also requires that at least 500 hands
+produced side pots and at least 500 reached showdown:
+
+```ts
+expect(handsWithSidePots).toBeGreaterThan(500);
+expect(handsToShowdown).toBeGreaterThan(500);
+```
+
+Without this, a change that made most hands end preflop would leave a suite that still passes
+5000 conservation checks while testing almost nothing. **A fuzz test that does not assert on
+its own coverage can quietly stop doing its job.**
+
+**The bug it found.** On the first run it destroyed 1510 chips in hand 624. Seat 3 was all-in
+for 223; seats 0 and 2 built a 1510 side pot, then both folded — one folding on the flop when
+it could have checked for free. That produced a pot with `eligibleSeats: []`, which
+`settleHand` skipped over, deleting the money.
+
+Two changes came out of it, deliberately separate:
+
+1. **Root cause** — folding is legal only when facing a bet. This is the only way to orphan a
+   side pot, so removing the action removes the whole failure class.
+2. **Symptom** — `settleHand` now throws on a pot with no eligible winner rather than skipping
+   it. Silently dropping chips was the actual defect; if guard 1 ever regresses, this fails
+   loudly instead.
+
+Both are pinned by regression tests (`betting.test.ts › rejects a fold when the seat could
+check for free`, `showdown.test.ts › throws rather than silently dropping a pot`).
+
+**Why this is the argument for property testing.** No reviewer was going to hand-write "two
+players build a side pot against a short all-in, then both fold, one of them declining a free
+check." The scenario is four interacting rules deep. Worked examples verify what you thought
+of; fuzzing finds what you did not.
+
+**`assertChipsConserved` is exported and runs in production**, not just in tests — the same
+invariant, monitored on live hands.
+
 ---
 
 ## Invariant catalogue
@@ -284,3 +338,9 @@ against live data, because an invariant worth testing is worth monitoring.
 | I15 | An illegal action always throws — never coerced, never ignored | `betting.test.ts › illegal actions throw` | F4 |
 | I16 | One card is burned before the flop, turn and river | `betting.test.ts › street progression` | F4 |
 | I17 | `applyAction` never mutates the state it was given | `betting.test.ts › immutability and conservation` | F4 |
+| I18 | Chips out equals chips in across a whole hand, settlement included *(also in prod)* | `showdown.test.ts › random hands`, `assertChipsConserved()` | F5 |
+| I19 | Derived pots always total exactly the chips committed | `showdown.test.ts › random hands` | F5 |
+| I20 | No pot can ever have zero eligible winners | `betting.ts › canFold`, `showdown.test.ts › throws rather than silently dropping` | F5 |
+| I21 | Pots depend only on final contributions, never on betting order | `showdown.test.ts › is independent of the order bets arrived in` | F5 |
+| I22 | Every sequence of legal actions terminates | `showdown.test.ts › always terminates` | F5 |
+| I23 | Odd chips in a split pot go left of the button | `showdown.test.ts › gives an odd chip to the first seat left of the button` | F5 |

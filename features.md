@@ -450,3 +450,86 @@ call `applyAction`, persist and broadcast the events, repeat.
 | --- | --- |
 | `packages/poker/src/betting.ts` | `applyAction()`, `legalActions()`, `Action`/`HandEvent` types |
 | `packages/poker/src/betting.test.ts` | The BB option, the under-sized all-in rule, all-in run-outs, chip conservation per action |
+
+---
+
+### F5 — Side pots and showdown (`packages/poker`)
+
+**What it does.** `derivePots()` slices the money into main and side pots; `settleHand()`
+decides each pot and credits the winners. This completes the poker core — a hand can now be
+dealt, played, and paid out.
+
+**Why it is built this way.**
+
+*Pots are derived, never accumulated.* This is the whole design. The usual approach patches
+pots incrementally as bets arrive — "someone went all-in, split off a side pot" — and the
+special cases multiply until some combination is wrong. Instead, `derivePots` ignores the
+betting history entirely and looks only at each seat's final `committedTotal`, slicing the
+money into horizontal layers at every distinct contribution amount:
+
+```
+  seat A all-in 200   ░░░░░░░░
+  seat B all-in 500   ░░░░░░░░▒▒▒▒▒▒▒▒▒▒▒▒
+  seat C      1000    ░░░░░░░░▒▒▒▒▒▒▒▒▒▒▒▒▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓
+                      └ 200×3 ┘└  300×2  ┘└    500×1     ┘
+                       main      side 1        side 2
+```
+
+Each layer is `(tier − previousTier) × (seats who reached that tier)`, and the seats eligible
+to win it are those who reached it **and did not fold** — a folded player's chips stay in the
+pot, their seat does not. Because this is a pure function of the final contributions, there is
+no ordering to get wrong and no incremental state to corrupt. A test asserts directly that any
+argument order yields identical pots.
+
+*Adjacent layers with identical eligibility are merged*, so a hand with no all-ins reports one
+pot rather than one layer per distinct bet size.
+
+*Odd chips go left of the button.* A split pot rarely divides evenly; the remainder is
+distributed one chip at a time starting immediately left of the button. That is the standard
+live rule and the one that cannot be gamed by seat selection.
+
+*A single-eligible-seat pot is returned uncontested*, which is how the uncalled portion of a
+bet gets refunded rather than won.
+
+*`assertChipsConserved` is exported, not test-only.* The engine runs it on every hand in
+production. An invariant worth testing is worth monitoring.
+
+**The bug a 5000-hand fuzz run found, and what changed because of it.**
+
+The fuzz test destroyed 1510 chips. The cause: seat 3 was all-in for 223, seats 0 and 2 built
+a 1510 side pot between them, and then **both folded** — one of them folding on the flop when
+it could have checked for free. That left a pot with `eligibleSeats: []`, which `settleHand`
+skipped, deleting the money.
+
+The fix is at the root, not the symptom: **folding is now legal only when facing a bet.**
+Folding what you could check is always irrational, cardrooms treat it as a check, and it is
+the *only* way to orphan a side pot — for a pot to lose every eligible seat, the last one to
+fold must have been facing a bet, but whoever made that bet is also eligible, so it cannot
+have been the last. Removing that action removes the entire failure class.
+
+`settleHand` additionally now **throws** on a pot with no eligible winner instead of skipping
+it. Fixing the cause and making the symptom loud are different jobs, and silently dropping
+chips was precisely the defect.
+
+**How it connects.**
+
+```mermaid
+flowchart TB
+    BET["betting.ts<br/>hand reaches showdown or complete"] --> DERIVE["derivePots()<br/>from committedTotal"]
+    DERIVE --> SETTLE["settleHand()"]
+    EVAL["evaluator.ts"] --> SETTLE
+    SETTLE --> AWARDS["awards + credited seats"]
+    AWARDS --> LEDGER["packages/db<br/>double-entry settlement"]
+    AWARDS --> HIST["hand history<br/>+ spectator UI"]
+    SETTLE -.->|every hand, in prod| ASSERT["assertChipsConserved()"]
+```
+
+The engine calls `settleHand` once the street reaches `showdown` or `complete`, writes the
+awards into the ledger as a single balanced transaction, and publishes the hand.
+
+**Key files.**
+
+| File | Role |
+| --- | --- |
+| `packages/poker/src/showdown.ts` | `derivePots()`, `settleHand()`, `assertChipsConserved()` |
+| `packages/poker/src/showdown.test.ts` | Tier slicing, odd chips, uncalled-bet refunds, and the 5000-hand conservation fuzz |

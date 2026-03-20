@@ -120,7 +120,13 @@ export function legalActions(state: HandState): LegalActions | null {
 
   return {
     seat: seat.seat,
-    canFold: true,
+    // Folding is legal only when facing a bet. Folding what you could check is
+    // always irrational, and cardrooms treat it as a check — but more importantly
+    // it is the ONLY way to orphan a side pot. For a pot to lose every eligible
+    // seat, the last of them to fold must have been facing a bet; whoever made
+    // that bet is also eligible, so it cannot have been the last. Allowing this
+    // fold therefore destroys chips outright, which a fuzz run duly found.
+    canFold: facingBet,
     canCheck: !facingBet,
     canCall: facingBet && seat.stack > 0,
     callAmount: toCall,
@@ -261,6 +267,7 @@ export function applyAction(state: HandState, action: Action): { state: HandStat
 
   switch (action.type) {
     case 'fold': {
+      assert(legal.canFold, `Seat ${seat.seat} cannot fold when it can check for free`);
       seats = updateSeat(state, seat.seat, (s) => ({ ...s, status: 'folded', hasActedThisStreet: true }));
       break;
     }
