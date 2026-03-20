@@ -311,6 +311,51 @@ of; fuzzing finds what you did not.
 **`assertChipsConserved` is exported and runs in production**, not just in tests — the same
 invariant, monitored on live hands.
 
+### F6 — Commit-reveal shuffle
+
+**Suite:** `packages/shuffle/src/shuffle.test.ts` — 27 tests, ~5s (the statistical group
+dominates).
+
+A shuffle cannot be tested by example. "This seed produces this deck" proves only that the
+code is deterministic, not that it is *fair*. So the suite attacks three separate claims.
+
+| Group | Claim under test |
+| --- | --- |
+| `commitment` | The server is bound to one seed; commitments are stable; seeds never repeat |
+| `final seed derivation` | Every input affects the deck, and receive-order does not |
+| `deck production` | Output is always a permutation of exactly 52 distinct cards |
+| `rejection sampling` | No modulo bias at the acceptance boundary |
+| `statistical uniformity` | No detectable bias across 50,000 real shuffles |
+
+**Testing the rejection boundary directly.** Modulo bias for a range of 52 drawn from 32
+bits is far too small to detect statistically — you would need on the order of 2³⁰ samples.
+So instead of trying, a `RiggedStream` subclass feeds `uniformBelow` chosen 32-bit values
+and asserts the boundary behaviour exactly: a draw at the limit is discarded, several
+consecutive out-of-range draws are all discarded, and the largest in-range draw is accepted.
+That converts an untestable statistical property into three deterministic assertions.
+
+**Two complementary uniformity tests.** One checks *every card* landing in the first
+position; the other checks *one card* landing in every position. They fail on different
+bugs — a shuffle that tends to leave cards near where they started passes the first and
+fails the second. Chi-square over 51 degrees of freedom with a threshold of 110 (roughly a
+one-in-a-million false failure) against a fair-shuffle expectation near 51.
+
+**The commitment hash is pinned to a literal.** `commitmentFor('00'×32)` must equal
+`66687aad…`. Verifiers in other languages must hash the 32 seed **bytes**, not the
+64-character hex string — an easy and completely silent mistake to make when
+reimplementing. The literal makes the intended reading unambiguous.
+
+**A bug this suite found.** `distinguishes the same seed submitted from a different seat`
+failed on first run. The seat number was being used only to *order* client seeds, never
+hashed into the digest — so the same seed from seat 0 and seat 5 produced an identical deck.
+A published hand history could therefore misattribute whose entropy was whose with no
+verifier able to detect it. The fix hashes a 4-byte big-endian seat alongside each seed.
+Worth noting the timing: nothing had been published, so this cost nothing. The same finding
+after launch would have been a breaking change to the verification spec.
+
+**Not tested here.** Shuffle throughput. We draw a few hundred bytes per hand; the network
+round-trip to an agent dwarfs it entirely.
+
 ---
 
 ## Invariant catalogue
@@ -344,3 +389,9 @@ against live data, because an invariant worth testing is worth monitoring.
 | I21 | Pots depend only on final contributions, never on betting order | `showdown.test.ts › is independent of the order bets arrived in` | F5 |
 | I22 | Every sequence of legal actions terminates | `showdown.test.ts › always terminates` | F5 |
 | I23 | Odd chips in a split pot go left of the button | `showdown.test.ts › gives an odd chip to the first seat left of the button` | F5 |
+| I24 | `commit` is `SHA256` of the raw 32 seed bytes, and binds the server to one seed | `shuffle.test.ts › commitment` | F6 |
+| I25 | The deck depends on every input — server seed, each client seed, its seat, and the hand id | `shuffle.test.ts › final seed derivation` | F6 |
+| I26 | The deck never depends on the order client seeds were received | `shuffle.test.ts › does not depend on the order client seeds arrived in` | F6 |
+| I27 | Every shuffle is a permutation of exactly 52 distinct cards | `shuffle.test.ts › deck production` | F6 |
+| I28 | Index selection is free of modulo bias — all 52! permutations equally likely | `shuffle.test.ts › rejection sampling`, `› statistical uniformity` | F6 |
+| I29 | A server seed is never reused across hands | `shuffle.test.ts › never repeats a server seed` | F6 |

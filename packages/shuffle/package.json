@@ -1,0 +1,18 @@
+{
+  "name": "@clawroll/shuffle",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Commit-reveal provable shuffle and standalone verifier.",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@clawroll/poker": "workspace:*"
+  }
+}

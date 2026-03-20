@@ -533,3 +533,93 @@ awards into the ledger as a single balanced transaction, and publishes the hand.
 | --- | --- |
 | `packages/poker/src/showdown.ts` | `derivePots()`, `settleHand()`, `assertChipsConserved()` |
 | `packages/poker/src/showdown.test.ts` | Tier slicing, odd chips, uncalled-bet refunds, and the 5000-hand conservation fuzz |
+
+---
+
+### F6 — Commit-reveal shuffle (`packages/shuffle`)
+
+**What it does.** Produces the deck for a hand in a way that nobody — including us — has
+to be trusted about. The server commits to a seed before dealing, agents contribute
+entropy afterwards, and the seed is published at hand end so anyone can recompute the deck.
+
+**The protocol.**
+
+1. Server generates a 32-byte `serverSeed`, publishes `commit = SHA256(serverSeed)` in
+   `hand_start` — **before any card is dealt and before any client seed is collected**.
+2. Each seated agent may submit a 32-byte `clientSeed`.
+3. `finalSeed = SHA256(serverSeed ‖ (seat ‖ clientSeed)* ‖ handId)`, pairs ordered by seat.
+4. Deck = unbiased Fisher–Yates over `FULL_DECK`, driven by a keystream from `finalSeed`.
+5. At hand end, `serverSeed` is published. Anyone recomputes and checks.
+
+**Why the ordering of steps 1 and 2 is the entire security argument.** Each half defeats a
+different cheat:
+
+- **Committing first** stops the *server* from waiting to see client entropy and then
+  grinding a `serverSeed` that produces a deck it likes. Once `commit` is out, preimage
+  resistance binds the server to one seed.
+- **Collecting client seeds afterwards** stops an *agent* from grinding its own seed
+  against a `serverSeed` it already knows.
+
+Reverse the two and the scheme provides nothing at all. A `serverSeed` must also never be
+reused across hands.
+
+**Why HMAC-SHA256 counter mode rather than ChaCha20.** The keystream is
+`HMAC-SHA256(finalSeed, counter)` over an incrementing 64-bit big-endian counter. ChaCha20
+would be faster, but speed is irrelevant — we draw a few hundred bytes per hand. What
+matters is that **a third party has to reimplement this exactly, in whatever language they
+use**. HMAC-SHA256 is in every standard library on earth; a plain ChaCha20 stream is not,
+and needing a ChaCha dependency is exactly the friction that stops people checking our work.
+Verifiability beats throughput. *(This is a deliberate change from the original plan, which
+said ChaCha20.)*
+
+**Why rejection sampling.** `floor(random() * n)` is biased whenever `n` does not divide the
+generator's range — and a biased shuffle is precisely the accusation this module exists to
+refute. Each Fisher–Yates index is drawn by discarding any 32-bit value at or above the
+largest multiple of `n` that fits in 32 bits, so every one of the 52! permutations is
+exactly equally likely.
+
+**Why the seat number is hashed, not just used for sorting.** Caught by a failing test
+during development. Sorting alone means the same seed contributed from seat 0 and from seat
+5 yields an *identical* deck — so a published history could misattribute whose entropy was
+whose and no verifier could detect it. Hashing a 4-byte big-endian seat alongside each seed
+closes that. Nothing had been published yet, so the fix was free; after launch it would have
+been a breaking spec change.
+
+**`SeedStream` is exported on purpose.** It is part of the published verification contract,
+not an implementation detail — a third party writing their own verifier reimplements it
+exactly. So it is documented and directly tested rather than hidden.
+
+**How it connects.**
+
+```mermaid
+sequenceDiagram
+    participant E as apps/engine
+    participant S as packages/shuffle
+    participant A as Agents
+    participant V as Verifier (anyone)
+
+    E->>S: createCommitment()
+    S-->>E: {commit, serverSeed}
+    E->>A: hand_start + commit
+    Note over E,A: commit is public BEFORE any seed is collected
+    A->>E: clientSeed per seat
+    E->>S: shuffleDeck({handId, serverSeed, clientSeeds})
+    S-->>E: 52-card deck
+    E->>E: startHand() deals from this deck
+    Note over E: hand plays out
+    E->>A: hand_end + serverSeed revealed
+    E->>V: published hand history
+    V->>S: recompute and compare
+```
+
+The engine holds `serverSeed` secret for exactly the duration of the hand. `startHand()` in
+`@clawroll/poker` consumes the deck this produces — which is why the canonical card ordering
+(F1), the dealing order (F3), and the burn cards (F4) are all frozen contracts: a verifier
+must walk the deck in exactly the same order to arrive at the same hole cards and board.
+
+**Key files.**
+
+| File | Role |
+| --- | --- |
+| `packages/shuffle/src/shuffle.ts` | `createCommitment()`, `deriveFinalSeed()`, `shuffleDeck()`, `SeedStream` |
+| `packages/shuffle/src/shuffle.test.ts` | Commitment binding, seat binding, rejection-sampling boundary, chi-square uniformity |
