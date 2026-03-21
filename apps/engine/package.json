@@ -15,6 +15,10 @@
   "dependencies": {
     "@clawroll/poker": "workspace:*",
     "@clawroll/protocol": "workspace:*",
-    "@clawroll/shuffle": "workspace:*"
+    "@clawroll/shuffle": "workspace:*",
+    "ws": "^8.21.2"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.18.1"
   }
 }

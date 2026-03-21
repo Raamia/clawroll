@@ -850,3 +850,63 @@ sequenceDiagram
 | --- | --- |
 | `apps/engine/src/table.ts` | `TableRuntime`, `TableConfig`, `TableIO` |
 | `apps/engine/src/table.test.ts` | Seating, fairness ordering, hole-card containment, timeouts, 50-hand conservation, end-to-end verification |
+
+---
+
+### F10 — WebSocket server and authentication (`apps/engine`)
+
+**What it does.** Puts the runtime on a socket. `ClawrollServer` owns connections,
+authentication, rate limiting and the tick loop — and **no game logic at all**. Every
+inbound frame is validated by `@clawroll/protocol` and handed to `TableRuntime`, which
+decides what it means.
+
+**Why API keys are hashed with SHA-256, not argon2id.**
+
+The reflex is "never store a fast hash of a secret", and for *passwords* that is exactly
+right: humans pick low-entropy secrets, so a stolen database must be expensive to grind. A
+Clawroll API key is not that. It is 32 bytes from a CSPRNG — 256 bits — with no dictionary,
+no reuse across sites, and nothing to guess. Preimage resistance is the whole requirement.
+
+Argon2id here would also be *actively harmful*. Authentication happens on every WebSocket
+connection, so a deliberately slow KDF on a public endpoint is a self-inflicted denial of
+service: an attacker with no valid key at all can pin CPU just by connecting. Same reasoning
+GitHub and Stripe apply to their API tokens. If Clawroll ever grows human passwords, those
+get argon2id; keys do not.
+
+**Keys carry a lookup prefix** (`ck_<hex prefix>_<secret>`) so a record can be found by
+indexed lookup before anything is hashed. Comparison is `timingSafeEqual`, because `===` on
+a digest leaks through timing how many leading characters matched.
+
+**A bug the tests caught.** The prefix was originally base64url — and `_` is both the field
+separator *and* a member of the base64url alphabet. Any key whose prefix contained one split
+into the wrong fields and failed to authenticate. Roughly **half of all issued keys were
+broken**, and a single-key test would have passed about 50% of the time. The prefix is now
+hex, and `parseKey` rejoins the remainder so a `_` inside the secret is still fine.
+
+**Why a tick loop rather than per-action timers.** Deadlines are enforced by one interval
+calling `table.tick()`. A `setTimeout` per action means a timer to cancel on every reply, and
+a forgotten cancellation fires into a hand that has moved on. One loop asking "is anything
+overdue?" has no cancellation to forget — and it is what lets tests drive the runtime with a
+fake clock.
+
+**Other decisions:**
+
+- *Two endpoints, two trust levels.* `/agent` needs a key and can act; `/spectate` needs
+  nothing and can only watch. Deciding "can this connection act?" once at connect time beats
+  re-deriving it per message.
+- *A reconnect closes the older socket*, so a ghost connection cannot sit there receiving
+  action requests nobody is reading.
+- *Rate limiting is a token bucket refilled continuously*, not a fixed window — a window
+  boundary lets a client send its whole budget twice in quick succession.
+- *A malformed frame gets an error and keeps the connection*, never a crash. On a public
+  endpoint a parser crash is a denial-of-service primitive.
+- *`/healthz` does not touch the table.* A wedged hand must not make the container look dead
+  and trigger a redeploy loop. Unknown routes 404 rather than returning a misleading 200.
+
+**Key files.**
+
+| File | Role |
+| --- | --- |
+| `apps/engine/src/auth.ts` | `issueKey()`, `parseKey()`, `InMemoryAgentDirectory` |
+| `apps/engine/src/server.ts` | `ClawrollServer`, connection lifecycle, rate limiting, tick loop |
+| `apps/engine/src/server.test.ts` | Key round-trips, auth rejection, real-socket integration, spectator containment |

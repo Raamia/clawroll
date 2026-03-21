@@ -479,6 +479,46 @@ calls `assertChipsConserved` inside `settle()` on every hand, so a leak throws i
 rather than only failing a test.
 
 
+### F10 — WebSocket server and authentication
+
+**Suite:** `apps/engine/src/server.test.ts` — 27 tests, ~0.7s. Unlike every suite before it,
+this one uses **real sockets against a real listening server** on an ephemeral port.
+
+| Group | What it protects |
+| --- | --- |
+| `API key handling` | Key round-trips, the secret is never stored, keys are distinct, five malformed shapes rejected, wrong secret rejected |
+| `the server over real sockets` | Auth rejection, welcome, spectator access, seating, malformed frames, ping, rate limiting, reconnection, broadcast, hole-card containment, disconnect cleanup, health check |
+
+**Why the integration tests use real sockets.** Everything below this layer is already
+covered by fast in-memory tests. What is left is precisely the part a mock cannot check:
+that `ws` actually delivers the frames, that `maxPayload` is wired, that a close event
+reaches `unseat`, and that the URL parsing gets the API key out. Mocking the socket here
+would test the mock.
+
+**A bug this suite found, and why the loop count matters.**
+`authenticates every key it issues, 500 times over` exists because the first implementation
+generated the key prefix with base64url — whose alphabet includes `_`, the same character
+`parseKey` splits on. A prefix containing one split into the wrong fields and the key was
+rejected as unauthorized. **Roughly half of every key issued was broken.**
+
+Seven socket tests failed with "timed out waiting for welcome", which is what surfaced it.
+The important detail is the fix to the *test*: asserting on one key would have passed about
+50% of the time — a textbook flaky test that gets re-run, goes green, and hides a defect
+affecting half of all users. Five hundred iterations makes it deterministic.
+
+**Rate limiting is asserted not to close the socket.** Disconnecting a chatty agent
+mid-hand would fold it by timeout, turning a client bug into lost chips. The server pushes
+back with `rate_limited` and keeps the connection.
+
+**Spectator containment is re-tested at this layer** even though F9 covers it in the runtime.
+The runtime guarantees no *broadcast* carries hole cards; this asserts the socket layer does
+not accidentally deliver a private `your_cards` to the broadcast set — a different mistake,
+in different code, with the same consequence.
+
+**Health check has a negative.** `/healthz` returns 200 and `/nope` returns 404, so a typo'd
+health-check path fails loudly rather than reporting healthy from a catch-all handler.
+
+
 ---
 
 ## Invariant catalogue
@@ -533,3 +573,10 @@ against live data, because an invariant worth testing is worth monitoring.
 | I42 | A wedged agent cannot stall the table *(also in prod)* | `table.test.ts › action timeouts`, `› supplies a seed for any agent that misses the deadline` | F9 |
 | I43 | Chips are conserved across consecutive hands *(also in prod)* | `table.test.ts › conserves chips across fifty consecutive hands` | F9 |
 | I44 | A hand played by the engine verifies from its published messages alone | `table.test.ts › a hand played through the runtime is independently verifiable` | F9 |
+| I45 | Every issued API key authenticates | `server.test.ts › authenticates every key it issues, 500 times over` | F10 |
+| I46 | The secret half of a key is never stored | `server.test.ts › never stores the secret half` | F10 |
+| I47 | Key comparison is constant-time | `auth.ts › digestsMatch` via `timingSafeEqual` | F10 |
+| I48 | An unauthenticated connection can watch but never act | `server.test.ts › lets a spectator watch`, `› rejects a connection with no API key` | F10 |
+| I49 | A malformed frame never crashes or closes the connection | `server.test.ts › answers a malformed frame without dropping the connection` | F10 |
+| I50 | A rate-limited agent is throttled, never disconnected | `server.test.ts › rate limits a flood without closing the socket` | F10 |
+| I51 | `/healthz` never depends on table state | `server.test.ts › serves a health check that does not depend on the table` | F10 |
