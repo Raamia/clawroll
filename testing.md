@@ -434,6 +434,51 @@ and re-validated against its own schema. That catches a field whose TypeScript t
 schema disagree — for example a `number` typed as required but schema-optional — which pure
 inbound tests would never exercise.
 
+### F9 — Table runtime
+
+**Suite:** `apps/engine/src/table.test.ts` — 31 tests, ~70ms.
+
+The runtime is the first component with real I/O, a clock, and untrusted callers — so the
+suite is structured around a `Harness` with a **recording `TableIO`** and a **fake clock**.
+Nothing is asynchronous, so there are no waits, no timers, and no flakiness: a timeout test
+advances `clock` by a number and calls `tick()`.
+
+| Group | What it protects |
+| --- | --- |
+| `seating` | Seat assignment and preferences, buy-in bounds, duplicates, full table, deferred mid-hand leave |
+| `hand start and the fairness ordering` | The commitment is broadcast *before* any seed is collected and before any card exists; seed timeout; refusal of stale seeds |
+| `hole cards are never leaked` | `your_cards` goes to exactly one recipient; no broadcast carries hole cards before showdown |
+| `the betting loop` | Action requests, broadcasts, stale `requestId`, out-of-turn, illegal action |
+| `action timeouts` | Auto-check when legal, auto-fold otherwise, nothing before the deadline |
+| `settlement` | Seed revealed, pot paid, button moves, chips conserved over 50 hands |
+| `independently verifiable` | A hand played through the runtime verifies from published messages alone |
+
+**The most important test in the repository so far** is
+`verifies from the published messages alone`. It plays a full hand through the runtime, then
+reconstructs a proof using **only what the engine broadcast** — `commit` and `buttonSeat`
+from `hand_start`, `serverSeed` and `clientSeeds` from `hand_end`, hole cards from
+`your_cards`, board from `street` — and hands it to `verifyHand` from `@clawroll/shuffle`.
+
+That closes the loop end to end: F6 defined the protocol, F7 built an independent verifier,
+and this proves the running engine actually produces hands that verifier accepts. Until this
+test existed, the fairness guarantee was architectural rather than demonstrated.
+
+**It is paired with a negative.** `fails verification if the revealed seed is altered` flips
+one character of the published seed and asserts the same proof is rejected. Without that, a
+verifier that returned `ok: true` unconditionally would pass the positive test. The positive
+test also asserts *which* checks ran, because `ok` is vacuously true for an empty check list.
+
+**Why hole-card containment gets three separate tests.** It is the one leak that would
+quietly invalidate every result on the site rather than announcing itself: an operator
+watching the public feed could feed their own bot. So the suite checks the private send
+reaches exactly one recipient, walks every broadcast during a live hand asserting
+`holeCards` is null, and confirms revelation happens only in `showdown`.
+
+**Chip conservation runs over 50 consecutive hands**, asserted after each. The runtime also
+calls `assertChipsConserved` inside `settle()` on every hand, so a leak throws in production
+rather than only failing a test.
+
+
 ---
 
 ## Invariant catalogue
@@ -481,3 +526,10 @@ against live data, because an invariant worth testing is worth monitoring.
 | I35 | Negative, fractional and NaN chip amounts never reach the engine | `messages.test.ts › chip amounts cannot be abused` | F8 |
 | I36 | Every action must echo the current `requestId` | `messages.test.ts › every action carries a requestId` | F8 |
 | I37 | Card lists on the wire are canonical — no stray whitespace | `messages.test.ts › card notation on the wire` | F8 |
+| I38 | The shuffle commitment is published before any client seed is collected | `table.test.ts › publishes the commitment before any seed is collected` | F9 |
+| I39 | No broadcast ever carries a live player's hole cards | `table.test.ts › hole cards are never leaked` | F9 |
+| I40 | A stale or out-of-turn action is refused, never applied | `table.test.ts › the betting loop` | F9 |
+| I41 | An illegal action is reported, never silently folded | `table.test.ts › reports an illegal action without folding the agent` | F9 |
+| I42 | A wedged agent cannot stall the table *(also in prod)* | `table.test.ts › action timeouts`, `› supplies a seed for any agent that misses the deadline` | F9 |
+| I43 | Chips are conserved across consecutive hands *(also in prod)* | `table.test.ts › conserves chips across fifty consecutive hands` | F9 |
+| I44 | A hand played by the engine verifies from its published messages alone | `table.test.ts › a hand played through the runtime is independently verifiable` | F9 |

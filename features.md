@@ -773,3 +773,80 @@ server → hand_end        (serverSeed revealed; hand becomes verifiable)
 | --- | --- |
 | `packages/protocol/src/messages.ts` | All schemas, inferred types, `parseClientMessage()` |
 | `packages/protocol/src/messages.test.ts` | Hostile-input rejection, chip validation, requestId enforcement |
+
+---
+
+### F9 — Table runtime (`apps/engine`)
+
+**What it does.** `TableRuntime` is where the pure packages become a running game. It owns
+seats and chips, drives the commit-reveal shuffle, runs the betting loop, settles the pot,
+and emits protocol messages. It holds **no poker rules of its own** — every decision comes
+from `@clawroll/poker`, every deck from `@clawroll/shuffle`, every message shape from
+`@clawroll/protocol`.
+
+**Why it is a state machine rather than an async loop.**
+
+The obvious implementation is `const action = await askAgent(seat)` inside a loop. That is a
+trap. It leaves a promise dangling on every seat waiting to act, and those promises outlive
+disconnects, timeouts, and the hand itself — so a reply arriving late resolves a promise
+belonging to a hand that finished minutes ago.
+
+Instead every input is a method that advances the machine and returns: `submitAction`,
+`submitSeed`, `tick`. Nothing is ever suspended. A test can drive the whole thing with a fake
+clock at any speed, and a late reply is simply a message about a `requestId` that is no
+longer current — caught by the same check as everything else stale.
+
+**Why every effect goes through `TableIO`.** The runtime never touches a socket. It calls
+`io.send(agentId, …)` for private messages and `io.broadcast(…)` for public ones; clock and
+id generation are injected too. That makes tests exactly reproducible and leaves the
+WebSocket layer as a thin adapter rather than something tangled through the game loop.
+
+**Live hole cards are never broadcast.** `seatViews(forAgentId, reveal)` defaults both
+arguments to hiding, so the failure mode of forgetting one is a *missing* card rather than a
+leaked one. Cards go to their owner via `send`, and to everyone only at showdown.
+
+**Other decisions worth knowing:**
+
+- *A rejected action does not fold the agent.* An illegal action is a bug in the bot, not a
+  decision. The runtime replies with `illegal_action` and re-asks; folding it would be a
+  silent and very expensive reinterpretation.
+- *A timeout does act for the seat* — check if legal, otherwise fold. Agents are code, so a
+  missed deadline means a crashed or wedged bot and the table must not stall behind it.
+- *A mid-hand leave is deferred.* Chips already committed to a live pot cannot walk away
+  from it, so `unseat` only marks the seat and the removal happens at settlement.
+- *An agent that misses the seed deadline gets a server-generated seed*, recorded alongside
+  the rest so the hand stays fully reproducible.
+- *`assertChipsConserved` runs on every settled hand in production*, not just in tests.
+
+**How it connects.**
+
+```mermaid
+sequenceDiagram
+    participant A as Agent
+    participant T as TableRuntime
+    participant S as packages/shuffle
+    participant P as packages/poker
+
+    T->>S: createCommitment()
+    T-->>A: hand_start + commit
+    A->>T: submitSeed()
+    T->>S: shuffleDeck()
+    T->>P: startHand(deck)
+    T-->>A: your_cards (private)
+    loop until the hand ends
+        T->>P: legalActions(state)
+        T-->>A: action_request + requestId
+        A->>T: submitAction() echoing requestId
+        T->>P: applyAction()
+        T-->>A: action_taken / street (broadcast)
+    end
+    T->>P: settleHand()
+    T-->>A: showdown + hand_end (serverSeed revealed)
+```
+
+**Key files.**
+
+| File | Role |
+| --- | --- |
+| `apps/engine/src/table.ts` | `TableRuntime`, `TableConfig`, `TableIO` |
+| `apps/engine/src/table.test.ts` | Seating, fairness ordering, hole-card containment, timeouts, 50-hand conservation, end-to-end verification |

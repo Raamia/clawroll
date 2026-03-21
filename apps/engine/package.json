@@ -1,0 +1,20 @@
+{
+  "name": "@clawroll/engine",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Table runtime and agent-facing server.",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@clawroll/poker": "workspace:*",
+    "@clawroll/protocol": "workspace:*",
+    "@clawroll/shuffle": "workspace:*"
+  }
+}

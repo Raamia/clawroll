@@ -18,6 +18,18 @@ importers:
         specifier: ^2.1.8
         version: 2.1.9(@types/node@22.20.1)
 
+  apps/engine:
+    dependencies:
+      '@clawroll/poker':
+        specifier: workspace:*
+        version: link:../../packages/poker
+      '@clawroll/protocol':
+        specifier: workspace:*
+        version: link:../../packages/protocol
+      '@clawroll/shuffle':
+        specifier: workspace:*
+        version: link:../../packages/shuffle
+
   packages/poker: {}
 
   packages/protocol:
