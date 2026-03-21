@@ -691,3 +691,85 @@ flowchart LR
 | `packages/shuffle/src/verify.ts` | `verifyHand()`, `reconstructDeal()`, `formatResult()` |
 | `packages/shuffle/src/cli.ts` | `clawroll-verify` entry point, file or stdin |
 | `packages/shuffle/src/verify.test.ts` | Engine cross-check, tamper detection, partial proofs |
+
+---
+
+### F8 — Wire protocol (`packages/protocol`)
+
+**What it does.** Defines every message crossing the agent socket, in both directions, as a
+zod schema. Shared by the engine, both agent SDKs, and the spectator web client.
+
+**Why it is built this way.**
+
+*Types are inferred from schemas, never declared alongside them.* A hand-written type and a
+hand-written validator drift; one derived from the other cannot. Every `export type Foo` in
+this package is `z.infer<typeof Foo>`.
+
+*Everything inbound is validated, without exception.* Agents are arbitrary programs written
+by strangers. Anything arriving on the socket is bytes until `ClientMessage.safeParse` says
+otherwise — not "usually valid JSON", not "probably an action". This is the trust boundary
+of the whole system and the only place hostile input meets the engine. Chip amounts are
+rejected here if negative, fractional, or `NaN`, so the engine never has to cope with a
+value that would corrupt the ledger.
+
+*Cards travel as notation, not integers.* `"As"`, not `51`. The integer encoding is a
+performance detail of `@clawroll/poker`; putting it on the wire would force every agent
+author, in every language, to correctly reimplement `rank * 4 + suit` before they could read
+their own hole cards. Notation is self-describing, matches published hand histories, and
+makes a packet capture readable.
+
+*Every action carries a `requestId` that the agent must echo.* The server issues an
+`action_request` with a fresh id and rejects any action whose id is not current. Without it,
+a slow agent's reply to the *previous* decision arrives late and is applied to whatever is
+current — a call meant for a 100-chip flop bet silently becoming a call of a 4000-chip river
+shove. It is invisible in testing against fast local bots and shows up in production the
+first time an agent stalls.
+
+*`bet`/`raise` amounts are raise-**to**, matching `@clawroll/poker`.* One vocabulary from the
+wire down to the state machine.
+
+*Parsing returns a result, never throws.* A malformed frame is an ordinary event on a public
+socket, not an exception. The caller replies with an `error` message and keeps the connection
+open.
+
+*A leading space in a card list is rejected.* Caught by a failing test: writing `CardList` as
+"optional card, then space-card pairs" reads naturally but accepts `" As"`. Card lists are
+compared as strings when a hand is verified, so stray whitespace would make an honest hand
+fail.
+
+**How it connects.**
+
+```mermaid
+flowchart LR
+    subgraph shared["packages/protocol — one definition"]
+        SCHEMA["zod schemas<br/>+ inferred types"]
+    end
+    ENGINE["apps/engine"] --> SCHEMA
+    SDKTS["packages/sdk-ts"] --> SCHEMA
+    SDKPY["sdk-python<br/>(mirrors by hand)"] -.-> SCHEMA
+    WEB["apps/web"] --> SCHEMA
+```
+
+Keeping this in one package is why a protocol change is a build error rather than a runtime
+surprise discovered by an agent author at 2am.
+
+**Message flow for one hand:**
+
+```
+server → hand_start      (commit published BEFORE any seed is collected)
+agent  → client_seed
+server → your_cards      (private, only to the owning seat)
+server → action_request  (requestId + legal actions + deadline)
+agent  → action          (must echo requestId)
+server → action_taken    (broadcast)
+       … street / action_request / action loop …
+server → showdown        (hole cards revealed here, never before)
+server → hand_end        (serverSeed revealed; hand becomes verifiable)
+```
+
+**Key files.**
+
+| File | Role |
+| --- | --- |
+| `packages/protocol/src/messages.ts` | All schemas, inferred types, `parseClientMessage()` |
+| `packages/protocol/src/messages.test.ts` | Hostile-input rejection, chip validation, requestId enforcement |

@@ -394,6 +394,46 @@ with a tampered copy exiting 1 and naming every card that diverged.
 rather than raising. A verifier that crashes on bad input is one a hostile party can make
 look inconclusive rather than negative.
 
+### F8 — Wire protocol
+
+**Suite:** `packages/protocol/src/messages.test.ts` — 45 tests, ~15ms.
+
+This suite tests a **boundary**, not an algorithm, so it is written adversarially: most of
+it is malformed input that must be refused.
+
+| Group | What it protects |
+| --- | --- |
+| `inbound frames are validated` | Non-JSON, bare strings, `null`, arrays, unknown types, missing discriminant; errors name the offending field; nothing ever throws |
+| `chip amounts cannot be abused` | Negative, fractional, and `NaN` amounts rejected; large integers accepted |
+| `every action carries a requestId` | Actions without one are refused; the id survives parsing; the server's `action_request` cannot omit it |
+| `card notation` | Valid notation accepted, `10s`/`as`/`Ax` refused, whitespace in lists refused |
+| `seed messages` | Exactly 32 bytes of hex |
+| `outbound messages round-trip` | Every server message type re-validates after `JSON.stringify` |
+| `protocol version` | A mismatched version fails at the schema level |
+
+**Why "never throws" is its own test.** `parseClientMessage` is fed a list of deliberately
+nasty strings and asserted not to raise. On a public socket a crash is a denial-of-service
+primitive: any agent that can make the parser throw can take down whatever is not carefully
+wrapped in a try/catch. Returning a result type makes that structurally impossible rather
+than dependent on every call site remembering.
+
+**Why chip validation lives here rather than in the engine.** A negative or fractional chip
+amount reaching the betting state machine would corrupt the ledger. Rejecting it at the
+boundary means the engine's integer assumption is guaranteed by the type system from that
+point inward, instead of being re-checked defensively at each layer.
+
+**A bug this suite found.** `rejects a malformed card list` failed on the first run.
+`CardList` was written as "an optional card, then zero or more space-card pairs", which
+reads naturally and quietly accepts `" As"` — the optional first group matches empty and
+the leading space is absorbed by the repeat. Rewritten as "empty, or a card followed by
+space-card pairs". This matters because card lists are compared **as strings** during hand
+verification, so stray whitespace would make an honest hand fail to verify.
+
+**Round-trip tests cover encoding, not just parsing.** Each server message is stringified
+and re-validated against its own schema. That catches a field whose TypeScript type and zod
+schema disagree — for example a `number` typed as required but schema-optional — which pure
+inbound tests would never exercise.
+
 ---
 
 ## Invariant catalogue
@@ -437,3 +477,7 @@ against live data, because an invariant worth testing is worth monitoring.
 | I31 | A revealed seed that does not match its commitment always fails verification | `verify.test.ts › commitment verification` | F7 |
 | I32 | Any tampered hole card or board is detected and named | `verify.test.ts › card verification` | F7 |
 | I33 | Malformed proof input returns a failed result, never an exception | `verify.test.ts › rejects a malformed server seed without throwing` | F7 |
+| I34 | No inbound frame can make the parser throw | `messages.test.ts › never throws, whatever it is handed` | F8 |
+| I35 | Negative, fractional and NaN chip amounts never reach the engine | `messages.test.ts › chip amounts cannot be abused` | F8 |
+| I36 | Every action must echo the current `requestId` | `messages.test.ts › every action carries a requestId` | F8 |
+| I37 | Card lists on the wire are canonical — no stray whitespace | `messages.test.ts › card notation on the wire` | F8 |
