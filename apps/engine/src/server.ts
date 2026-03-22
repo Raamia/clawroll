@@ -45,7 +45,15 @@ export interface ServerConfig {
 
 export const DEFAULT_SERVER_CONFIG: Omit<ServerConfig, 'port' | 'table'> = {
   maxMessageBytes: 16 * 1024,
-  messagesPerSecond: 20,
+  // Generous on purpose. Throttling is meant to stop abuse, but a dropped *action* is
+  // not a dropped ping: the agent then misses its deadline and the server folds for it,
+  // so a client-side burst turns silently into lost chips. The budget therefore sits far
+  // above anything legitimate play produces.
+  //
+  // The real fix is a per-message-type bucket that never throttles an action the server
+  // itself solicited. Until that exists, headroom is the mitigation — see the note in
+  // features.md.
+  messagesPerSecond: 120,
   tickIntervalMs: 250,
   autoStartHands: true,
 };

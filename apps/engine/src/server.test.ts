@@ -233,16 +233,33 @@ describe('the server over real sockets', () => {
   });
 
   it('rate limits a flood without closing the socket', async () => {
-    const { apiKey } = directory.register('a1', 'Bot One');
-    const client = await connect(`/agent?key=${apiKey}`);
-    await client.waitFor('welcome');
+    // Runs its own server with a deliberately tiny budget. Depending on the default
+    // would make this test a hostage to that number — it already broke once when the
+    // default was raised, which proved it was testing the constant, not the mechanism.
+    const tightDirectory = new InMemoryAgentDirectory();
+    const tightServer = new ClawrollServer(
+      config({ messagesPerSecond: 5 }),
+      tightDirectory,
+    );
+    const tightPort = await tightServer.start();
 
-    for (let i = 0; i < 100; i++) client.send({ type: 'ping', nonce: `n${i}` });
-    await new Promise((r) => setTimeout(r, 100));
+    try {
+      const { apiKey } = tightDirectory.register('a1', 'Bot One');
+      const client = await TestClient.connect(tightPort, `/agent?key=${apiKey}`);
+      clients.push(client);
+      await client.waitFor('welcome');
 
-    const limited = client.of('error').filter((e) => e.code === 'rate_limited');
-    expect(limited.length).toBeGreaterThan(0);
-    expect(client.closed).toBe(false);
+      for (let i = 0; i < 50; i++) client.send({ type: 'ping', nonce: `n${i}` });
+      await new Promise((r) => setTimeout(r, 100));
+
+      const limited = client.of('error').filter((e) => e.code === 'rate_limited');
+      expect(limited.length).toBeGreaterThan(0);
+      // Throttled, never disconnected: dropping a chatty agent mid-hand would fold it
+      // by timeout, turning a client bug into lost chips.
+      expect(client.closed).toBe(false);
+    } finally {
+      await tightServer.stop();
+    }
   });
 
   it('replaces an older connection when an agent reconnects', async () => {

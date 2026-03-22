@@ -15,10 +15,12 @@
     "typecheck": "pnpm -r typecheck",
     "dev:infra": "docker compose up -d",
     "dev:infra:down": "docker compose down",
-    "dev:infra:reset": "docker compose down -v && docker compose up -d"
+    "dev:infra:reset": "docker compose down -v && docker compose up -d",
+    "demo": "tsx apps/engine/src/bots/session.ts"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",
+    "tsx": "^4.23.5",
     "typescript": "^5.7.2",
     "vitest": "^2.1.8"
   },

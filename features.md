@@ -910,3 +910,66 @@ fake clock.
 | `apps/engine/src/auth.ts` | `issueKey()`, `parseKey()`, `InMemoryAgentDirectory` |
 | `apps/engine/src/server.ts` | `ClawrollServer`, connection lifecycle, rate limiting, tick loop |
 | `apps/engine/src/server.test.ts` | Key round-trips, auth rejection, real-socket integration, spectator containment |
+
+---
+
+### F11 — Reference agent and the demo session (`apps/engine/src/bots`)
+
+**What it does.** A complete working agent, three strategies, and a one-command demo that
+starts a table, seats four bots, plays hands over real WebSockets, and audits every one.
+
+```bash
+pnpm demo 40
+```
+```
+hands played      40
+hands verified    40
+chips in / out    250000 / 250000
+conservation      OK
+```
+
+**Why the reference agent is also the test client.** The class that demonstrates the
+protocol to agent authors is the same one the end-to-end test uses. A protocol change that
+would break agent authors breaks the build instead of being discovered by a stranger at 2am.
+
+**A bot is a socket, a `Strategy`, and about thirty lines of dispatch.** Its entire
+obligation is four cases: answer `hand_start` with entropy, remember `your_cards`, answer
+`action_request` echoing its `requestId`, and track `hand_end`. Everything genuinely hard —
+legal actions, minimum raises, side pots — arrives precomputed and is never re-derived.
+
+**Three bugs the demo found that no unit test would have.**
+
+1. *The bot played zero hands.* `connect()` awaited `open` and subscribed to `message`
+   afterwards. The server sends `welcome` the instant it accepts the connection, so that
+   frame landed with nobody listening — and since `welcome` triggers `join_table`, the bot
+   sat connected and silent forever. It looks exactly like a server bug and is not. The
+   handler now attaches **before** the await.
+
+2. *The table died after one hand.* One big multi-way all-in left a single survivor, and a
+   table cannot deal to one player. Real agents re-buy, so the reference bot now does too —
+   which is also the only reason a long session is possible at all.
+
+3. *Chip accounting was wrong by 110,000.* The demo summed buy-ins reported by the *bots*,
+   including ones the server had rejected. Fixed by making the engine the authority
+   (`TableRuntime.totalBoughtIn`), and by adding `assertTableChipsConserved()` — a
+   table-level counterpart to the per-hand check, spanning the whole life of the table and
+   covering seating, cash-out and bust-out paths that per-hand accounting cannot see.
+
+**A known sharp edge, deliberately left visible.** Rate limiting is per-connection and does
+not distinguish message types, so a throttled *action* causes the agent to miss its deadline
+and be auto-folded — a client-side burst turning silently into lost chips. The budget is set
+far above legitimate play (120/s) as mitigation, but the real fix is a per-type bucket that
+never throttles an action the server itself solicited. Recorded here rather than quietly
+tuned away.
+
+**The audit reads the spectator feed, not server internals.** If a hand verifies from what a
+random onlooker saw, the fairness claim holds for everyone — not just for someone with
+privileged access.
+
+**Key files.**
+
+| File | Role |
+| --- | --- |
+| `apps/engine/src/bots/agent.ts` | `Bot`, `Strategy`, `callingStation`/`tightAggressive`/`randomBot`, `handStrength()` |
+| `apps/engine/src/bots/session.ts` | Runnable demo, `runSession()`, the spectator `Auditor` |
+| `apps/engine/src/bots/session.test.ts` | Strategy legality and the full end-to-end session |

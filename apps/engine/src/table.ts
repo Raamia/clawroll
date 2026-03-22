@@ -119,6 +119,10 @@ export class TableRuntime {
   private phase: Phase = 'idle';
   private hand: ActiveHand | null = null;
   private handsPlayed = 0;
+  /** Every chip ever bought onto this table. */
+  private chipsBoughtIn = 0;
+  /** Every chip ever carried off it by a departing player. */
+  private chipsCashedOut = 0;
 
   constructor(
     private readonly config: TableConfig,
@@ -157,6 +161,7 @@ export class TableRuntime {
     if (index === -1) return { ok: false, code: 'table_full', message: 'no seat available' };
 
     this.seats[index] = { agentId, displayName, stack: buyIn, leaving: false };
+    this.chipsBoughtIn += buyIn;
     this.broadcastState();
     return { ok: true, seat: index };
   }
@@ -173,6 +178,7 @@ export class TableRuntime {
       this.seats[seat]!.leaving = true;
       return;
     }
+    this.chipsCashedOut += this.seats[seat]!.stack;
     this.seats[seat] = null;
     this.broadcastState();
   }
@@ -507,10 +513,17 @@ export class TableRuntime {
       stacks: result.seats.map((s) => ({ seat: s.seat, stack: s.stack })),
     });
 
-    // Agents who asked to leave mid-hand, and anyone busted, go now.
+    // Agents who asked to leave mid-hand, and anyone busted, go now. A departing player
+    // carries their remaining chips off the table, which has to be recorded or the
+    // conservation check below would read it as a leak.
     for (const [index, occupant] of this.seats.entries()) {
-      if (occupant && (occupant.leaving || occupant.stack === 0)) this.seats[index] = null;
+      if (occupant && (occupant.leaving || occupant.stack === 0)) {
+        this.chipsCashedOut += occupant.stack;
+        this.seats[index] = null;
+      }
     }
+
+    this.assertTableChipsConserved();
 
     this.phase = 'idle';
     this.hand = null;
@@ -601,9 +614,38 @@ export class TableRuntime {
     const seat = this.seatOf(agentId);
     return seat === null ? null : this.seats[seat]!.stack;
   }
-  /** Total chips on the table. Used to assert conservation across many hands. */
+  /** Total chips currently sitting in stacks. */
   totalChips(): number {
     return this.seats.reduce((sum, s) => sum + (s?.stack ?? 0), 0);
+  }
+
+  /** Every chip ever bought onto this table. */
+  get totalBoughtIn(): number {
+    return this.chipsBoughtIn;
+  }
+
+  /** Every chip ever carried off it. */
+  get totalCashedOut(): number {
+    return this.chipsCashedOut;
+  }
+
+  /**
+   * Table-level conservation: chips in equals chips on the felt plus chips taken away.
+   *
+   * This is the counterpart to `assertChipsConserved`, which only covers a single hand's
+   * settlement. This one spans the whole life of the table and would catch a leak in
+   * seating, cash-out, or the bust-out path that per-hand accounting cannot see. Run on
+   * every settled hand in production, not just in tests.
+   */
+  assertTableChipsConserved(): void {
+    const accounted = this.totalChips() + this.chipsCashedOut;
+    if (accounted !== this.chipsBoughtIn) {
+      throw new Error(
+        `Table ${this.config.tableId} chip conservation violated: ` +
+          `${this.chipsBoughtIn} bought in, ${accounted} accounted for ` +
+          `(${this.totalChips()} on table + ${this.chipsCashedOut} cashed out)`,
+      );
+    }
   }
   /** Hole cards as dealt, for tests and for writing hand histories. */
   holeCardsFor(seat: number): string | null {

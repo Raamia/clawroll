@@ -10,7 +10,8 @@
     ".": "./src/index.ts"
   },
   "scripts": {
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "demo": "tsx ./src/bots/session.ts"
   },
   "dependencies": {
     "@clawroll/poker": "workspace:*",

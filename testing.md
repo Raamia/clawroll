@@ -519,6 +519,53 @@ in different code, with the same consequence.
 health-check path fails loudly rather than reporting healthy from a catch-all handler.
 
 
+### F11 — Reference agent and the demo session
+
+**Suite:** `apps/engine/src/bots/session.test.ts` — 10 tests, ~6s (the session dominates).
+
+| Group | What it protects |
+| --- | --- |
+| `hand strength heuristic` | Made hands beat unmade, pairs beat trash, suited/connected rewarded, bounded 0..1 |
+| `strategies produce a legal-looking decision` | 200 iterations each: amounts stay within `minRaiseTo..maxRaiseTo`, actions are real actions, nobody folds a free check |
+| `a full session over real sockets` | 25+ hands played, **all** verified, chips conserved, zero agent errors |
+
+**The end-to-end test is the M3 acceptance criterion.** Everything beneath it is already
+covered in isolation; this asserts the pieces work *together* — real server, real sockets,
+real bots, real hands — and it checks four things at once:
+
+- hands actually got played (not a silently stalled table),
+- `verifiedHands === handsPlayed` — **all**, not most,
+- chips in equals chips accounted for, counted by the engine rather than the bots,
+- `botErrors` is empty, which is what catches a regression in the protocol contract: an
+  agent written against the documentation must never see an error.
+
+**Why the demo found bugs that 290 unit tests did not.** All three were **integration**
+failures, invisible to any component tested alone:
+
+1. A **listener-attachment race** — the bot subscribed to `message` after awaiting `open`,
+   missing the `welcome` frame that triggers `join_table`. Every unit test passed; the bot
+   played zero hands and looked like a broken server.
+2. A **liveness** failure — one multi-way all-in left a single survivor and the table could
+   not deal. Correct behaviour by every component, and a dead table.
+3. An **accounting** error — the demo trusted the bots' own buy-in counts, including ones
+   the server rejected, and reported a 110,000-chip conservation violation that did not
+   exist.
+
+The third is the instructive one: the instrumentation was wrong, not the engine. It still
+produced a fix worth having — `TableRuntime.assertTableChipsConserved()`, a table-level
+invariant spanning seating, cash-out and bust-out, which per-hand accounting structurally
+cannot see. **A false alarm that reveals a missing invariant is not a wasted investigation.**
+
+**A test that broke for the right reason.** `rate limits a flood without closing the socket`
+failed when the default budget was raised from 20/s to 120/s — proving it was asserting on
+the constant rather than the mechanism. It now starts its own server with
+`messagesPerSecond: 5`, so it tests throttling regardless of what the default becomes.
+
+**Strategy tests run 200 iterations, not one.** `randomBot` is seeded but its output depends
+on call order, so a single call would exercise one branch. Two hundred covers every option
+the legal-action set offers.
+
+
 ---
 
 ## Invariant catalogue
@@ -580,3 +627,7 @@ against live data, because an invariant worth testing is worth monitoring.
 | I49 | A malformed frame never crashes or closes the connection | `server.test.ts › answers a malformed frame without dropping the connection` | F10 |
 | I50 | A rate-limited agent is throttled, never disconnected | `server.test.ts › rate limits a flood without closing the socket` | F10 |
 | I51 | `/healthz` never depends on table state | `server.test.ts › serves a health check that does not depend on the table` | F10 |
+| I52 | Chips bought onto a table always equal chips on it plus chips carried off *(also in prod)* | `TableRuntime.assertTableChipsConserved()`, `session.test.ts` | F11 |
+| I53 | Every hand in a live session verifies from the public feed alone | `session.test.ts › plays hands that all verify` | F11 |
+| I54 | An agent written against the docs never receives a protocol error | `session.test.ts › botErrors is empty` | F11 |
+| I55 | A strategy never proposes an amount outside the legal range | `session.test.ts › strategies produce a legal-looking decision` | F11 |
