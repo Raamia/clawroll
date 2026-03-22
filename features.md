@@ -1046,3 +1046,65 @@ flowchart LR
 | `packages/db/src/migrate.ts` | Hand-written DDL — the constraints are the correctness mechanism |
 | `packages/db/src/ledger.ts` | `postTransaction()`, domain operations, invariant checks |
 | `packages/db/src/ledger.test.ts` | Real-Postgres tests including concurrent replay and deadlock |
+
+---
+
+### F13 — Devnet guard and deposit addresses (`packages/solana`)
+
+**What it does.** Two things the money path depends on: proving which Solana cluster we are
+actually talking to, and deriving every agent's deposit address from one master seed.
+
+**The guard checks the genesis hash, not the URL.**
+
+This is the mechanism that makes the devnet-only claim *true in code* rather than merely
+intended. A URL string is evidence of nothing: `https://api.devnet.solana.com` can be
+re-pointed by DNS, a proxy, a hosts file, or a paid RPC provider that quietly falls back to
+mainnet when a key expires. A URL containing the word "devnet" is a **claim about** a
+cluster, not the cluster.
+
+The genesis hash *is* the cluster's identity. `assertDevnet` asks the endpoint what chain it
+is on and refuses to continue unless the answer is devnet's hash. Pointing Clawroll at real
+money therefore requires editing `cluster.ts` — a deliberate, reviewable act — rather than
+editing an environment variable.
+
+It also **fails closed**: an unreachable RPC is not treated as "probably fine". When the
+question is "is this real money?", unknown is not permission.
+
+*Verified against reality, not just asserted.* `CLAWROLL_LIVE_TESTS=1` runs the guard
+against the actual devnet and mainnet endpoints. Both hashes were confirmed live. Off by
+default so CI does not go flaky on a rate-limited public RPC.
+
+**One master seed, no per-agent secrets.**
+
+Each agent's address comes from `m/44'/501'/{index}'/0'` — the standard Solana path, so the
+same mnemonic opens these accounts in Phantom or the CLI if recovery is ever needed. The
+alternative, a keypair per agent with each secret stored encrypted, means a growing pile of
+secrets to protect, rotate, back up and eventually leak. Here there is exactly one, and every
+address is a pure function of it plus an integer.
+
+Stated plainly: **the master seed is the entire custody position.** Losing it loses every
+deposit address; leaking it leaks all of them. On devnet that is worth nothing, which is a
+good place to build the habit.
+
+**Two details that cause silent, expensive bugs:**
+
+- *The mnemonic checksum is verified, not trusted.* A single mistyped word derives a
+  **different valid seed** whose addresses nobody holds keys to. BIP-39's checksum exists to
+  catch exactly that, so it is checked.
+- *The owner address and the token account are different things.* USDC never lands on the
+  owner address; it lands in the Associated Token Account, a separate account that must
+  exist before it can receive anything — and creating it costs rent the platform pays,
+  because a new agent has no SOL. Conflating them is the classic "my deposit vanished" bug:
+  the transfer simply fails.
+
+*Derivation indices are `UNIQUE` in the schema.* Reusing one would give two agents the same
+address and the scanner would credit whoever it looked up first, silently paying the wrong
+account. The database makes that impossible rather than relying on the allocator.
+
+**Key files.**
+
+| File | Role |
+| --- | --- |
+| `packages/solana/src/cluster.ts` | `assertDevnet()`, genesis hashes, USDC mint, micro-USDC conversion |
+| `packages/solana/src/derivation.ts` | `masterSeedFromMnemonic()`, `deriveDepositAccount()`, `deriveKeypair()` |
+| `packages/solana/src/cluster.test.ts` | Guard behaviour plus opt-in live-network verification |

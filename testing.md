@@ -616,6 +616,51 @@ random ids per case so they never collide, but a second DB suite would run in a 
 worker against the same database; that will need a per-worker schema or `describe.sequential`.
 
 
+### F13 — Devnet guard and deposit addresses
+
+**Suites:** `packages/solana/src/cluster.test.ts` (16) and `derivation.test.ts` (18).
+
+| Group | What it protects |
+| --- | --- |
+| `the devnet guard` | Accepts devnet; refuses mainnet-beta, testnet, and unknown clusters; **fails closed** when the cluster cannot be verified at all |
+| `USDC amounts` | Six decimals, rounding rather than truncation, out-of-range refusal, string round-trip |
+| `master seed` | BIP-39 checksum enforced, ragged whitespace tolerated, passphrase changes the seed |
+| `derivation paths` | Standard Solana BIP-44 path, four invalid indices rejected |
+| `deposit accounts` | Determinism, 200 distinct addresses, owner ≠ token account, per-mint ATAs |
+| `against the live network` | Opt-in: the real devnet and mainnet endpoints |
+
+**Why "fails closed" has its own test.** An unreachable RPC could plausibly be treated as
+"probably fine, carry on". It must not be. When the question is *is this real money?*,
+unknown is not permission — so the guard throws on a connection error rather than proceeding.
+
+**Why the live tests exist, and why they are off by default.** Every other test here takes
+the genesis hash constants **on trust** — they assert that a stub reporting devnet's hash is
+accepted, which proves the comparison works, not that the constant is right. Only
+`CLAWROLL_LIVE_TESTS=1` checks the constants against reality. Both were verified against the
+real endpoints:
+
+```
+devnet        EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG
+mainnet-beta  5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d
+```
+
+They are opt-in because a public RPC is rate-limited and occasionally unreachable, and a
+network-dependent test in CI trains people to ignore red builds. Worth running before a
+deploy. Note the failure mode is benign: a wrong devnet hash means the guard rejects the
+**real** devnet and Clawroll refuses to start — loud, and only at deploy time.
+
+**A bug the checksum validation caught immediately.** The test file initially used a
+mistyped BIP-39 vector (`…abandon art` instead of `…abandon about`). `masterSeedFromMnemonic`
+rejected it and the suite failed to load. That is precisely the scenario the check defends
+against in production: a mistyped word derives a *different valid seed*, and without the
+checksum it would have silently produced a whole set of addresses nobody holds keys to. The
+validation earned its place before the code ever ran.
+
+**Why 200 addresses, not 2.** Address collision between agents is the failure that silently
+credits the wrong account. Two indices agreeing could happen by luck in a broken
+implementation; 200 distinct addresses across both owners and token accounts will not.
+
+
 ---
 
 ## Invariant catalogue
@@ -687,3 +732,8 @@ against live data, because an invariant worth testing is worth monitoring.
 | I59 | Concurrent transfers never deadlock | `ledger.test.ts › concurrent transfers do not deadlock` | F12 |
 | I60 | Every ledger amount is a safe integer, enforced by the database | `ledger.test.ts › bounds amounts to what JavaScript can represent` | F12 |
 | I61 | Declared constraints exist on the live database | `ledger.test.ts › the constraints actually exist` | F12 |
+| I62 | Clawroll never runs against a cluster other than devnet, verified by genesis hash | `cluster.test.ts › the devnet guard` | F13 |
+| I63 | An unverifiable cluster stops startup — unknown is not permission | `cluster.test.ts › refuses to start when the cluster cannot be verified` | F13 |
+| I64 | A master mnemonic failing its BIP-39 checksum is never used | `derivation.test.ts › master seed` | F13 |
+| I65 | Two agents can never share a deposit address | `derivation.test.ts › gives every index a distinct address`, `agents.derivation_index UNIQUE` | F13 |
+| I66 | USDC conversion rounds rather than truncating, and refuses unrepresentable amounts | `cluster.test.ts › USDC amounts` | F13 |
