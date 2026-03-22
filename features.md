@@ -1166,3 +1166,61 @@ to learn about it from a support message.
 | `packages/solana/src/gateway.ts` | `SolanaGateway` interface and the real `RpcGateway` |
 | `apps/wallet-worker/src/scanner.ts` | `DepositScanner`, cursor handling, `findUncreditedDeposits()` |
 | `apps/wallet-worker/src/scanner.test.ts` | Replays, lost cursors, mid-crash recovery, concurrent scanners |
+
+---
+
+### F15 — Withdrawal worker (`apps/wallet-worker`)
+
+**What it does.** The only code in Clawroll that *sends* money, which makes it the riskiest
+file in the repository. Everything else can be retried freely; a duplicated withdrawal is gone.
+
+**The hard problem: a sent transaction has an unknown fate.**
+
+`sendTransaction` returning an error does **not** mean the transaction failed. It may have
+reached the network and be waiting to land. A timeout means even less. The naive recovery —
+*the send errored, so retry it* — builds a **second** transaction, and if the first one lands
+the agent is paid twice.
+
+So the worker never asks "did the send succeed?". It asks **"what does the chain say about
+the signature I already recorded?"** — a question with a real answer.
+
+**The protocol:**
+
+1. **Debit the ledger first**, keyed on the withdrawal id. An agent can never have a transfer
+   in flight for money it does not hold, and the debit is idempotent.
+2. **Build and sign.**
+3. **Record the signature *before* broadcasting.** After a crash this row is the only thing
+   that lets us ask the chain what happened. Broadcasting first would leave a transaction in
+   flight that nothing in the system knows the name of.
+4. **Send.** Errors are recorded but decide nothing.
+5. **Poll the recorded signature:**
+   - Landed, succeeded → confirmed.
+   - Landed, failed → refund; the money never left.
+   - Not landed, blockhash valid → **wait**. Re-sending the same signed bytes is safe; the
+     chain deduplicates by signature.
+   - Not landed, blockhash expired → **now** rebuilding is safe.
+
+**Why blockhash expiry is the whole argument.** A Solana transaction is valid only while its
+blockhash is recent — roughly 150 slots. Once the chain is past `lastValidBlockHeight` that
+transaction **can never be included**. Not "probably won't": *cannot*. It is the only signal
+that turns "I don't know whether it landed" into "it definitively did not", and it is what
+separates a safe rebuild from a coin flip. Everything else in the file is bookkeeping.
+
+**`advance()` takes one step per call**, never a loop-until-done. Every state is durable in
+Postgres, so a crash resumes where it stopped, and each step is separately observable — which
+is what makes a stuck withdrawal diagnosable instead of a black box.
+
+**Refunds post as `adjustment`, not `deposit`.** The money movement is identical, but a refund
+recorded as a deposit would inflate every figure derived from deposits — volume, per-agent
+totals, on-chain reconciliation — with money that never came from the chain.
+
+**`findStuck()` is an alert.** A withdrawal cycling through rebuilds usually means the
+treasury is out of SOL for fees, or the destination cannot receive the token.
+
+**Key files.**
+
+| File | Role |
+| --- | --- |
+| `apps/wallet-worker/src/withdrawals.ts` | `WithdrawalWorker`, the state machine, `WithdrawalGateway` |
+| `packages/db/src/migrate.ts` | `withdrawals` table — signature `UNIQUE`, `last_valid_block_height` |
+| `apps/wallet-worker/src/withdrawals.test.ts` | Unknown-fate recovery, expiry-gated rebuild, refunds |

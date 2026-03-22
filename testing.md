@@ -705,6 +705,44 @@ state, which is balanced by construction. A third DB suite should still prompt a
 per-worker schemas.
 
 
+### F15 — Withdrawal worker
+
+**Suite:** `apps/wallet-worker/src/withdrawals.test.ts` — 16 tests, real Postgres plus a
+scriptable chain.
+
+| Group | What it protects |
+| --- | --- |
+| `requesting a withdrawal` | Debit precedes any chain contact; overdrafts refused with nothing sent; invalid amounts refused |
+| `the happy path` | Sign → record → send → confirm; a confirmed withdrawal is a no-op |
+| `a send whose fate is unknown` | No rebuild while the blockhash is valid; a transaction that **landed despite the send erroring** is confirmed; rebuild only after provable expiry; a crash between signing and broadcasting never double-sends |
+| `a transaction that lands and fails` | Refund issued, and issued only once |
+| `queue and observability` | `pending()`, `findStuck()` |
+| `the ledger stays balanced` | Across successes, failures and refunds alike |
+
+**The test that describes the actual disaster.** `confirms a transaction that landed even
+though the send reported an error` scripts the nastiest real behaviour: the RPC throws *and
+the transaction lands anyway*. A worker that trusted the return value of `send` would treat
+this as a failure, rebuild, and pay twice. The worker instead queries the recorded signature
+and confirms. **This is the single case the entire design exists for.**
+
+**`rebuilds only once the blockhash has provably expired`** walks the full sequence: send
+errors, first check does not rebuild (signature unchanged, `attempts` still 1), blockhash
+expires, status resets to `debited` with the signature cleared, a fresh attempt succeeds with
+a *different* signature, and the final balance is debited exactly once. Asserting the
+signature is unchanged before expiry is what proves the worker waited rather than gambled.
+
+**Why the chain is faked and Postgres is real.** Same split as the deposit scanner and for
+the same reason. Every scenario that matters here is a *partial failure* — a send that errors
+but lands, a blockhash expiring mid-flight, a crash between signing and broadcasting — and
+none can be requested from a live RPC. Meanwhile the durability of the state machine is
+Postgres's job, so that half stays real.
+
+**Crash recovery is tested by constructing a second worker.** `never sends twice across a
+crash between signing and broadcasting` signs with one worker, then advances with a freshly
+constructed one, as a restarted process would. It asserts nothing was sent and `attempts`
+stayed at 1 — the recovery read the durable row rather than starting over.
+
+
 ---
 
 ## Invariant catalogue
@@ -786,3 +824,8 @@ against live data, because an invariant worth testing is worth monitoring.
 | I69 | Losing the scan cursor costs time, never money | `scanner.test.ts › survives losing the cursor entirely` | F14 |
 | I70 | Only `finalized` transactions are ever credited | `gateway.ts › RpcGateway` commitment level | F14 |
 | I71 | Money on chain is never left uncredited *(also in prod)* | `scanner.test.ts › observability`, `findUncreditedDeposits()` | F14 |
+| I72 | An agent is debited before any withdrawal touches the chain | `withdrawals.test.ts › debits before anything touches the chain` | F15 |
+| I73 | A withdrawal signature is recorded before the transaction is broadcast | `withdrawals.test.ts › a send whose fate is unknown` | F15 |
+| I74 | A transaction is never rebuilt while its blockhash could still land | `withdrawals.test.ts › rebuilds only once the blockhash has provably expired` | F15 |
+| I75 | A transaction that lands despite a send error is confirmed, never re-sent | `withdrawals.test.ts › confirms a transaction that landed even though the send reported an error` | F15 |
+| I76 | A withdrawal that fails on chain is refunded exactly once | `withdrawals.test.ts › a transaction that lands and fails` | F15 |

@@ -245,6 +245,34 @@ export class Ledger {
     });
   }
 
+  /**
+   * Return money for a withdrawal that could not be sent.
+   *
+   * Posted as an `adjustment`, deliberately not reused from `creditDeposit`. The money
+   * movement is identical, but a refund recorded as a deposit would inflate every figure
+   * derived from deposits — volume, per-agent totals, on-chain reconciliation — with money
+   * that never arrived from the chain. Idempotent on the withdrawal id.
+   */
+  async refundWithdrawal(
+    agentId: string,
+    amountMicros: number,
+    withdrawalId: string,
+  ): Promise<PostResult> {
+    const available = await this.ensureAccount(agentId, 'available');
+    const house = await this.ensureAccount(null, 'house');
+
+    return this.postTransaction({
+      kind: 'adjustment',
+      externalRef: `refund:${withdrawalId}`,
+      memo: `refund for withdrawal ${withdrawalId}`,
+      entries: [
+        { accountId: house, amountMicros: -amountMicros },
+        { accountId: available, amountMicros },
+      ],
+      mayGoNegative: [house],
+    });
+  }
+
   /** Debit for a withdrawal. Fails if the agent cannot cover it. */
   async debitWithdrawal(agentId: string, amountMicros: number, requestId: string): Promise<PostResult> {
     const available = await this.ensureAccount(agentId, 'available');

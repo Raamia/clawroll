@@ -6,3 +6,4 @@
  * normal operation rather than an error.
  */
 export * from './scanner.js';
+export * from './withdrawals.js';

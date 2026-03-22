@@ -92,6 +92,37 @@ export const MIGRATIONS: readonly { name: string; sql: string }[] = [
       );
     `,
   },
+  {
+    name: '002_withdrawals',
+    sql: /* sql */ `
+      DO $$ BEGIN
+        CREATE TYPE withdrawal_status AS ENUM
+          ('debited','signed','sent','confirmed','failed','refunded');
+      EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
+      CREATE TABLE IF NOT EXISTS withdrawals (
+        id                       TEXT PRIMARY KEY,
+        agent_id                 TEXT NOT NULL REFERENCES agents(id),
+        destination              TEXT NOT NULL,
+        amount_micros            BIGINT NOT NULL CHECK (amount_micros > 0),
+        status                   withdrawal_status NOT NULL,
+        ledger_tx_id             TEXT REFERENCES ledger_txs(id),
+        -- Recorded BEFORE the transaction is broadcast. After a crash this is the only
+        -- way to ask the chain what happened instead of guessing.
+        signature                TEXT UNIQUE,
+        blockhash                TEXT,
+        -- A Solana transaction whose blockhash is past this height can never be included.
+        -- That is what makes rebuilding provably safe rather than a gamble.
+        last_valid_block_height  BIGINT,
+        attempts                 INTEGER NOT NULL DEFAULT 0,
+        error                    TEXT,
+        created_at               TIMESTAMPTZ NOT NULL DEFAULT now(),
+        updated_at               TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+      CREATE INDEX IF NOT EXISTS withdrawals_status_idx ON withdrawals (status);
+      CREATE INDEX IF NOT EXISTS withdrawals_agent_idx ON withdrawals (agent_id);
+    `,
+  },
 ];
 
 /** Apply any migration that has not run. Safe to call repeatedly. */
@@ -120,8 +151,8 @@ export async function migrate(sql: Sql): Promise<string[]> {
 /** Drop everything. Test-only — it is deliberately explicit about being destructive. */
 export async function dropAllTablesForTests(sql: Sql): Promise<void> {
   await sql.unsafe(`
-    DROP TABLE IF EXISTS deposit_sightings, ledger_entries, ledger_txs, accounts, agents,
-      schema_migrations CASCADE;
-    DROP TYPE IF EXISTS account_type, ledger_kind CASCADE;
+    DROP TABLE IF EXISTS withdrawals, deposit_sightings, ledger_entries, ledger_txs, accounts,
+      agents, schema_migrations CASCADE;
+    DROP TYPE IF EXISTS account_type, ledger_kind, withdrawal_status CASCADE;
   `);
 }
