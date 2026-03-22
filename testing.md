@@ -566,6 +566,56 @@ on call order, so a single call would exercise one branch. Two hundred covers ev
 the legal-action set offers.
 
 
+### F12 — Double-entry ledger
+
+**Suite:** `packages/db/src/ledger.test.ts` — 20 tests, ~0.25s, **against real Postgres**.
+
+```bash
+pnpm dev:infra   # required for this suite
+```
+
+**Why there is no in-memory double.** The `UNIQUE` on `external_ref`, `SELECT … FOR UPDATE`,
+and transactional rollback *are* the correctness mechanism. A fake that reimplemented them in
+JavaScript would be testing the fake. This is the one suite where the infrastructure
+dependency is the whole point.
+
+| Group | What it protects |
+| --- | --- |
+| `the constraints actually exist` | Interrogates `pg_indexes`/`pg_constraint` to confirm the UNIQUE, both CHECKs, and both partial indexes are live |
+| `a transaction must balance` | Non-zero sums, single-sided entries, fractional amounts, and full rollback on rejection |
+| `deposits are idempotent` | Sequential replay, **concurrent** replay, distinct signatures |
+| `accounts cannot go negative` | Withdrawal and buy-in overdrafts refused; `house` permitted to run negative |
+| `concurrent transfers do not deadlock` | 20 parallel transfers on shared accounts |
+| `a full money round trip` | Deposit → buy-in → settle with rake → cash-out → withdraw, conserving every micro-USDC |
+| `global invariants` | All entries sum to zero; no unbalanced transaction; no negative agent account |
+
+**Why the suite checks that constraints exist.** `schema.ts` and `migrate.ts` declare the
+same shapes independently and can drift. **A constraint that was declared but never created
+is worse than no constraint at all**, because the application is written trusting it — the
+double-credit protection would be a comment. So the tests query the live catalog rather than
+the source.
+
+**A bug found by probing, which a passing test was hiding.** The idempotency contract held
+for sequential replays. Under concurrency it did not: two callers both found no existing row,
+both inserted, and the loser received a raw Postgres `23505`. Money stayed correct — the
+constraint did its job — but the documented contract was broken.
+
+The original test **passed anyway**, because it asserted only `succeeded.length > 0` and the
+final balance. Both were true while 7 of 8 callers were getting exceptions. The lesson is
+specific: *asserting on the outcome is not the same as asserting on the contract*. The test
+now checks that zero calls reject, that exactly one reports `created: true`, and that all
+callers receive the same `txId`.
+
+**The deadlock test would fail reliably without the lock sort.** Twenty concurrent transfers
+touching the same two accounts is exactly the shape that deadlocks when lock order varies.
+It is allowed to reject for insufficient funds — that is a legitimate outcome — but any
+*other* rejection fails the test.
+
+**Note on parallelism.** This is currently the only suite touching Postgres. Tests use fresh
+random ids per case so they never collide, but a second DB suite would run in a different
+worker against the same database; that will need a per-worker schema or `describe.sequential`.
+
+
 ---
 
 ## Invariant catalogue
@@ -631,3 +681,9 @@ against live data, because an invariant worth testing is worth monitoring.
 | I53 | Every hand in a live session verifies from the public feed alone | `session.test.ts › plays hands that all verify` | F11 |
 | I54 | An agent written against the docs never receives a protocol error | `session.test.ts › botErrors is empty` | F11 |
 | I55 | A strategy never proposes an amount outside the legal range | `session.test.ts › strategies produce a legal-looking decision` | F11 |
+| I56 | Every ledger transaction's entries sum to exactly zero *(also in prod)* | `ledger.test.ts › a transaction must balance`, `Ledger.assertBalanced()` | F12 |
+| I57 | A deposit signature can never be credited twice, even concurrently | `ledger.test.ts › deposits are idempotent` | F12 |
+| I58 | An agent account can never go negative *(also in prod)* | `ledger.test.ts › accounts cannot go negative`, `findNegativeAgentAccounts()` | F12 |
+| I59 | Concurrent transfers never deadlock | `ledger.test.ts › concurrent transfers do not deadlock` | F12 |
+| I60 | Every ledger amount is a safe integer, enforced by the database | `ledger.test.ts › bounds amounts to what JavaScript can represent` | F12 |
+| I61 | Declared constraints exist on the live database | `ledger.test.ts › the constraints actually exist` | F12 |

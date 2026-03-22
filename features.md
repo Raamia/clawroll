@@ -973,3 +973,76 @@ privileged access.
 | `apps/engine/src/bots/agent.ts` | `Bot`, `Strategy`, `callingStation`/`tightAggressive`/`randomBot`, `handStrength()` |
 | `apps/engine/src/bots/session.ts` | Runnable demo, `runSession()`, the spectator `Auditor` |
 | `apps/engine/src/bots/session.test.ts` | Strategy legality and the full end-to-end session |
+
+---
+
+### F12 — Double-entry ledger (`packages/db`)
+
+**What it does.** The system of record for money. Every movement is a transaction whose
+entries sum to exactly zero, written through one function so there is a single place the
+balance rule is enforced.
+
+**Why it is built this way.**
+
+*There is no `balance` column anywhere.* A balance is `SUM(amount_micros)` over an account's
+entries, always. A stored balance is a second source of truth that can disagree with the
+first — and when it does, there is no way to tell which is wrong. The failure mode is a
+number that looks authoritative and is not. Deriving it costs an indexed aggregate and buys
+the guarantee that history and balance can never diverge, because there is only one of them.
+
+*Amounts are `number`, bounded by the database.* The column is `BIGINT`, which holds values
+JavaScript cannot represent exactly. Rather than introduce `BigInt` in the application —
+meaning two numeric representations in one money system and a conversion at every boundary —
+a `CHECK` constraint bounds every amount to ±2^53−1. **The database enforces what the type
+system assumes.** One representation everywhere, and the unrepresentable case is impossible
+rather than merely unlikely.
+
+*`external_ref` is `UNIQUE`, and it is the most important line in the schema.* A deposit's
+ref is its Solana signature. That one constraint makes double-crediting *impossible* rather
+than unlikely: a scanner seeing the same transaction twice — after a restart, a retry, or an
+overlapping poll window — cannot pay twice.
+
+*Posting is idempotent, not merely safe to retry.* `postTransaction` returns
+`{ txId, created }`; a replay returns the original id with `created: false` instead of
+throwing. Replay is *normal operation* for a scanner, not an error. If it threw, every caller
+would need a try/catch distinguishing "already credited" from "genuinely failed", and the
+first one to get that wrong either double-credits or drops a deposit.
+
+*Accounts are locked in sorted order.* `SELECT … FOR UPDATE` on every account a transaction
+touches, **sorted by id**. Two concurrent transfers touching A and B in opposite orders
+deadlock; the same two acquiring locks in a globally consistent order cannot. One `.sort()`,
+and it is the difference between working under load and failing at 3am.
+
+*Agent accounts can never go negative; `house` can.* The house side of a deposit is a
+liability position by definition, so it is opted in explicitly via `mayGoNegative` rather
+than the check being skipped generally.
+
+**A bug found by probing rather than by a test passing.** The idempotency contract held for
+*sequential* replays but not concurrent ones: two callers both found no row, both inserted,
+and the loser got a raw Postgres `23505`. Money was still correct — the constraint did its
+job — but the contract was broken, and the original test passed anyway because it only
+asserted `succeeded > 0` and the final balance. `postTransaction` now catches the unique
+violation and reads back the winner, so all 8 concurrent callers get `created: false` and one
+`txId`. The test now asserts that, not just the total.
+
+**How it connects.**
+
+```mermaid
+flowchart LR
+    SCAN["deposit scanner"] -->|"signature as external_ref"| L["Ledger.creditDeposit()"]
+    ENG["apps/engine"] -->|"hand id as external_ref"| S["Ledger.settleHand()"]
+    ENG --> B["buyIn / cashOut"]
+    WD["withdrawal worker"] --> D["Ledger.debitWithdrawal()"]
+    L & S & B & D --> PT["postTransaction()<br/>balanced, locked, idempotent"]
+    PT --> PG[("ledger_entries<br/>the only truth")]
+    PG --> INV["assertBalanced()<br/>scheduled in prod"]
+```
+
+**Key files.**
+
+| File | Role |
+| --- | --- |
+| `packages/db/src/schema.ts` | Drizzle table definitions and types |
+| `packages/db/src/migrate.ts` | Hand-written DDL — the constraints are the correctness mechanism |
+| `packages/db/src/ledger.ts` | `postTransaction()`, domain operations, invariant checks |
+| `packages/db/src/ledger.test.ts` | Real-Postgres tests including concurrent replay and deadlock |
