@@ -1108,3 +1108,61 @@ account. The database makes that impossible rather than relying on the allocator
 | `packages/solana/src/cluster.ts` | `assertDevnet()`, genesis hashes, USDC mint, micro-USDC conversion |
 | `packages/solana/src/derivation.ts` | `masterSeedFromMnemonic()`, `deriveDepositAccount()`, `deriveKeypair()` |
 | `packages/solana/src/cluster.test.ts` | Guard behaviour plus opt-in live-network verification |
+
+---
+
+### F14 — Deposit scanner (`apps/wallet-worker`)
+
+**What it does.** Polls every agent's deposit token account for incoming USDC and credits
+the ledger. It is the only component that turns something that happened on a blockchain into
+money inside Clawroll.
+
+**It is written around one assumption: it will see the same deposit more than once.**
+
+Restarts, retries, overlapping poll windows and cursor gaps all replay signatures. That is
+*normal operation*, not an error. A scanner that treats a replay as a failure will eventually
+either double-credit or drop a deposit, because every call site then has to classify the
+failure correctly and one of them will not.
+
+**Credit first, then record the sighting.** The ordering is the whole crash-safety argument:
+
+1. `ledger.creditDeposit(agentId, amount, signature)` — idempotent on the signature.
+2. Record the sighting, which also advances the cursor.
+
+Crash between the two and the next poll re-credits (a no-op) then records. **Doing it the
+other way round — sighting first — would mean a crash in the middle permanently skips a real
+deposit**, because the next poll sees the signature as already handled and never credits it.
+The money would be on chain and the agent would never be paid.
+
+The sighting table is therefore an observability record and a cursor, *not* a correctness
+mechanism. Correctness lives entirely in the ledger's `UNIQUE (external_ref)`.
+
+**Losing the cursor costs time, never money.** If a crash loses the sighting rows, the next
+scan re-reads history from the start and the ledger absorbs every duplicate. Tested by
+deleting the rows and re-scanning.
+
+**Everything runs at `finalized`, never `confirmed`.** A confirmed transaction can still be
+rolled back by a fork — crediting on it means a deposit that later ceases to exist while the
+agent has already played with the chips.
+
+**Amounts come from balance deltas, not decoded instructions.** A transfer can arrive via
+`transfer`, `transferChecked`, a CPI from another program, or several at once. The
+pre/post token balance change is what actually happened regardless of how it was expressed.
+
+**Why the gateway is an interface.** The scanner's real job is reasoning about partial
+failure, and none of those cases can be requested from a live RPC on demand — you cannot ask
+devnet to deliver the same signature twice or to go down mid-poll. Behind an interface, each
+becomes a three-line fake. `RpcGateway` is the real implementation, kept thin enough that
+reading it substitutes for testing it.
+
+**`findUncreditedDeposits()` is an alert, not a debug tool.** Money that arrived on chain and
+was never credited is the one failure a user notices immediately — better to page on it than
+to learn about it from a support message.
+
+**Key files.**
+
+| File | Role |
+| --- | --- |
+| `packages/solana/src/gateway.ts` | `SolanaGateway` interface and the real `RpcGateway` |
+| `apps/wallet-worker/src/scanner.ts` | `DepositScanner`, cursor handling, `findUncreditedDeposits()` |
+| `apps/wallet-worker/src/scanner.test.ts` | Replays, lost cursors, mid-crash recovery, concurrent scanners |

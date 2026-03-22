@@ -7,3 +7,4 @@
  */
 export * from './cluster.js';
 export * from './derivation.js';
+export * from './gateway.js';

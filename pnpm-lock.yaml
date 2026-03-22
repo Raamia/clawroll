@@ -40,6 +40,21 @@ importers:
         specifier: ^8.18.1
         version: 8.18.1
 
+  apps/wallet-worker:
+    dependencies:
+      '@clawroll/db':
+        specifier: workspace:*
+        version: link:../../packages/db
+      '@clawroll/solana':
+        specifier: workspace:*
+        version: link:../../packages/solana
+      '@solana/web3.js':
+        specifier: ^1.98.0
+        version: 1.98.4(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@6.0.6)
+      postgres:
+        specifier: ^3.4.7
+        version: 3.4.9
+
   packages/db:
     dependencies:
       drizzle-orm:

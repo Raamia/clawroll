@@ -661,6 +661,50 @@ credits the wrong account. Two indices agreeing could happen by luck in a broken
 implementation; 200 distinct addresses across both owners and token accounts will not.
 
 
+### F14 — Deposit scanner
+
+**Suite:** `apps/wallet-worker/src/scanner.test.ts` — 15 tests, ~0.3s, against real Postgres
+plus a scriptable fake Solana.
+
+| Group | What it protects |
+| --- | --- |
+| `crediting deposits` | New deposits, several transfers in one transaction, several separate deposits, failed transactions, no-op transactions, deposits to someone else's address |
+| `replays never double-credit` | Repeated scans, a **completely lost cursor**, a crash between crediting and recording, three concurrent scanners |
+| `the cursor` | Only new signatures fetched on a later scan; failed transactions still advance it |
+| `dust` | Below-minimum deposits ignored |
+| `observability` | `findUncreditedDeposits()` empty on success, populated when money is stranded |
+
+**Why the Solana side is a fake and the Postgres side is real.** They fail in different
+ways, so they are tested differently. The database's `UNIQUE` constraint *is* the
+double-credit protection, so faking it would test the fake. Solana, by contrast, cannot be
+asked to reproduce the cases that matter — the same signature twice, an RPC dying mid-poll,
+a transaction that landed but failed. Those are the scenarios worth exhaustive coverage, and
+a scriptable gateway is the only way to reach them.
+
+**The test that justifies the write ordering.** `recovers when a crash lands between
+crediting and recording` credits a deposit, then deletes the sighting row to simulate dying
+in the gap, then re-scans. It asserts the balance is unchanged (no double credit) *and* that
+the sighting is restored.
+
+Reverse the order in `scanner.ts` and this test still passes — but the **real** failure it
+describes becomes unrecoverable: with the sighting written first, a crash before crediting
+leaves a signature marked handled and money never paid. That asymmetry is why the ordering is
+documented in the source rather than left to look arbitrary.
+
+**`survives losing the cursor entirely` deletes every sighting** and re-scans, asserting two
+replays ignored, zero credited, and an unchanged balance. This is the crash-recovery path
+stated as a property: cursor loss is a performance problem, not a correctness one.
+
+**Concurrency is tested with three simultaneous scanners**, asserting no rejections and a
+single credit — the two-worker-instance case, which is how this would actually be deployed.
+
+**Note on Postgres parallelism.** This is now the second suite touching the database, running
+in a different vitest worker from `ledger.test.ts`. It is safe because every case allocates
+fresh random ids, and the global invariant checks in `ledger.test.ts` read only committed
+state, which is balanced by construction. A third DB suite should still prompt a move to
+per-worker schemas.
+
+
 ---
 
 ## Invariant catalogue
@@ -737,3 +781,8 @@ against live data, because an invariant worth testing is worth monitoring.
 | I64 | A master mnemonic failing its BIP-39 checksum is never used | `derivation.test.ts › master seed` | F13 |
 | I65 | Two agents can never share a deposit address | `derivation.test.ts › gives every index a distinct address`, `agents.derivation_index UNIQUE` | F13 |
 | I66 | USDC conversion rounds rather than truncating, and refuses unrepresentable amounts | `cluster.test.ts › USDC amounts` | F13 |
+| I67 | An on-chain deposit is credited exactly once, however many times it is seen | `scanner.test.ts › replays never double-credit` | F14 |
+| I68 | A crash between crediting and recording never loses a deposit | `scanner.test.ts › recovers when a crash lands between crediting and recording` | F14 |
+| I69 | Losing the scan cursor costs time, never money | `scanner.test.ts › survives losing the cursor entirely` | F14 |
+| I70 | Only `finalized` transactions are ever credited | `gateway.ts › RpcGateway` commitment level | F14 |
+| I71 | Money on chain is never left uncredited *(also in prod)* | `scanner.test.ts › observability`, `findUncreditedDeposits()` | F14 |
