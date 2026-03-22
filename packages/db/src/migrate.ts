@@ -123,6 +123,41 @@ export const MIGRATIONS: readonly { name: string; sql: string }[] = [
       CREATE INDEX IF NOT EXISTS withdrawals_agent_idx ON withdrawals (agent_id);
     `,
   },
+  {
+    name: '003_settlement_outbox',
+    sql: /* sql */ `
+      -- The outbox that gets a hand's result from the in-memory table into the ledger.
+      --
+      -- The runtime settles a hand synchronously in memory; posting to the ledger is
+      -- async. Writing the intent here first means a failed or interrupted post is
+      -- retried rather than lost, and applied_ledger_tx_id records that it landed.
+      CREATE TABLE IF NOT EXISTS hand_settlements (
+        hand_id              TEXT PRIMARY KEY,
+        table_id             TEXT NOT NULL,
+        -- [{ agentId, amountMicros }], summing to -rake.
+        deltas               JSONB NOT NULL,
+        rake_micros          BIGINT NOT NULL DEFAULT 0,
+        applied_ledger_tx_id TEXT REFERENCES ledger_txs(id),
+        attempts             INTEGER NOT NULL DEFAULT 0,
+        last_error           TEXT,
+        created_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
+        applied_at           TIMESTAMPTZ
+      );
+      CREATE INDEX IF NOT EXISTS hand_settlements_unapplied_idx
+        ON hand_settlements (created_at) WHERE applied_ledger_tx_id IS NULL;
+
+      -- Chips currently sitting at a table, so a restart can tell a live seat from an
+      -- orphaned in_play balance left behind by a crash.
+      CREATE TABLE IF NOT EXISTS table_seats (
+        table_id    TEXT NOT NULL,
+        agent_id    TEXT NOT NULL REFERENCES agents(id),
+        seat        INTEGER NOT NULL,
+        stack       BIGINT NOT NULL,
+        updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+        PRIMARY KEY (table_id, agent_id)
+      );
+    `,
+  },
 ];
 
 /** Apply any migration that has not run. Safe to call repeatedly. */
@@ -151,8 +186,8 @@ export async function migrate(sql: Sql): Promise<string[]> {
 /** Drop everything. Test-only — it is deliberately explicit about being destructive. */
 export async function dropAllTablesForTests(sql: Sql): Promise<void> {
   await sql.unsafe(`
-    DROP TABLE IF EXISTS withdrawals, deposit_sightings, ledger_entries, ledger_txs, accounts,
-      agents, schema_migrations CASCADE;
+    DROP TABLE IF EXISTS table_seats, hand_settlements, withdrawals, deposit_sightings,
+      ledger_entries, ledger_txs, accounts, agents, schema_migrations CASCADE;
     DROP TYPE IF EXISTS account_type, ledger_kind, withdrawal_status CASCADE;
   `);
 }

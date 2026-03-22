@@ -108,10 +108,37 @@ interface ActiveHand {
   readonly clientSeeds: Map<number, string>;
   readonly seatToAgent: Map<number, string>;
   readonly seedDeadline: number;
+  /** Stack per seat as the hand began — the baseline every settlement delta is measured from. */
+  readonly startingStacks: Map<number, number>;
   state: HandState | null;
   requestId: string | null;
   actionDeadline: number;
 }
+
+/**
+ * Something that happened at the table which the ledger needs to hear about.
+ *
+ * The runtime is synchronous and cannot await a database write, so it records what it did
+ * and the server drains these. Keeping them as data rather than callbacks means the runtime
+ * stays testable with no I/O at all, and a drain that fails can simply be retried.
+ */
+export type LedgerEvent =
+  | {
+      readonly type: 'hand_settled';
+      readonly handId: string;
+      readonly tableId: string;
+      /** Net chip change per agent across the hand. Sums to `-rakeMicros`. */
+      readonly deltas: readonly { agentId: string; amountMicros: number }[];
+      readonly rakeMicros: number;
+    }
+  | {
+      readonly type: 'seat_released';
+      readonly agentId: string;
+      readonly tableId: string;
+      /** Chips carried off the table, to be returned to the agent's spendable balance. */
+      readonly stack: number;
+      readonly reason: 'left' | 'busted';
+    };
 
 export class TableRuntime {
   private readonly seats: (Occupant | null)[];
@@ -123,6 +150,8 @@ export class TableRuntime {
   private chipsBoughtIn = 0;
   /** Every chip ever carried off it by a departing player. */
   private chipsCashedOut = 0;
+  /** Drained by the server and applied to the ledger. See `LedgerEvent`. */
+  private ledgerEvents: LedgerEvent[] = [];
 
   constructor(
     private readonly config: TableConfig,
@@ -178,7 +207,15 @@ export class TableRuntime {
       this.seats[seat]!.leaving = true;
       return;
     }
-    this.chipsCashedOut += this.seats[seat]!.stack;
+    const occupant = this.seats[seat]!;
+    this.chipsCashedOut += occupant.stack;
+    this.ledgerEvents.push({
+      type: 'seat_released',
+      agentId: occupant.agentId,
+      tableId: this.config.tableId,
+      stack: occupant.stack,
+      reason: 'left',
+    });
     this.seats[seat] = null;
     this.broadcastState();
   }
@@ -223,6 +260,7 @@ export class TableRuntime {
       commitment,
       clientSeeds: new Map(),
       seatToAgent: new Map(playable.map((s) => [s, this.seats[s]!.agentId])),
+      startingStacks: new Map(playable.map((s) => [s, this.seats[s]!.stack])),
       seedDeadline,
       state: null,
       requestId: null,
@@ -513,12 +551,41 @@ export class TableRuntime {
       stacks: result.seats.map((s) => ({ seat: s.seat, stack: s.stack })),
     });
 
+    // A hand only ever moves value between the seated players, so the deltas sum to zero
+    // (or to minus the rake). That is what keeps the ledger's global total untouched by
+    // play no matter how the chips move around the table.
+    const deltas = [...hand.seatToAgent.entries()]
+      .map(([seat, agentId]) => ({
+        agentId,
+        amountMicros:
+          (result.seats.find((s) => s.seat === seat)?.stack ?? 0) -
+          (hand.startingStacks.get(seat) ?? 0),
+      }))
+      .filter((d) => d.amountMicros !== 0);
+
+    if (deltas.length > 0) {
+      this.ledgerEvents.push({
+        type: 'hand_settled',
+        handId: hand.handId,
+        tableId: this.config.tableId,
+        deltas,
+        rakeMicros: 0,
+      });
+    }
+
     // Agents who asked to leave mid-hand, and anyone busted, go now. A departing player
     // carries their remaining chips off the table, which has to be recorded or the
     // conservation check below would read it as a leak.
     for (const [index, occupant] of this.seats.entries()) {
       if (occupant && (occupant.leaving || occupant.stack === 0)) {
         this.chipsCashedOut += occupant.stack;
+        this.ledgerEvents.push({
+          type: 'seat_released',
+          agentId: occupant.agentId,
+          tableId: this.config.tableId,
+          stack: occupant.stack,
+          reason: occupant.leaving ? 'left' : 'busted',
+        });
         this.seats[index] = null;
       }
     }
@@ -598,6 +665,19 @@ export class TableRuntime {
       message,
       ...(requestId !== undefined ? { requestId } : {}),
     });
+  }
+
+  /**
+   * Take everything the ledger has not yet been told about.
+   *
+   * Drained rather than pushed so the caller controls when the database is touched, and so
+   * a failed drain is the caller's problem to retry rather than a lost event inside a
+   * synchronous state machine.
+   */
+  drainLedgerEvents(): LedgerEvent[] {
+    const events = this.ledgerEvents;
+    this.ledgerEvents = [];
+    return events;
   }
 
   // Inspection hooks for tests and for the spectator API.

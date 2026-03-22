@@ -743,6 +743,41 @@ constructed one, as a restarted process would. It asserts nothing was sent and `
 stayed at 1 — the recovery read the durable row rather than starting over.
 
 
+### F16 — Bankroll service and settlement outbox
+
+**Suite:** `apps/engine/src/bankroll.test.ts` — 16 tests, real Postgres.
+
+| Group | What it protects |
+| --- | --- |
+| `chips at a table are already real money` | Buy-in moves `available → in_play` before the seat exists; overdrafts and invalid amounts refused |
+| `the settlement outbox` | Record then apply; applied exactly once across repeated drains; duplicate records ignored; a failed apply stays retryable; empty settlements skipped |
+| `reconciling chips stranded by a crash` | Orphaned `in_play` returned; live tables untouched; the ledger trusted over the cached stack |
+| `a real hand settles through to Postgres` | A hand played by the runtime, its own deltas applied, holdings conserved, ledger balanced |
+
+**The end-to-end test is the wiring proof.** It plays a real hand through `TableRuntime` with
+a recording IO, drains the emitted `LedgerEvent`s, and applies them — asserting the deltas net
+to zero, total holdings are unchanged by play, and each agent's `in_play` balance now equals
+the stack the table is actually holding. Nobody computes the result twice; the ledger receives
+exactly what the table did.
+
+**A test-design bug worth recording.** The suite initially asserted
+`applyPendingSettlements().failed === 0`. That drains the **whole** outbox, so once an earlier
+test deliberately parked an unappliable settlement, every later drain reported a failure —
+including on the next run, since the row survived in the database.
+
+Two changes came out of it, and the second matters more than the first:
+
+1. The deliberate-failure test now cleans up after itself, and `beforeAll` clears orphans left
+   by earlier runs.
+2. **Every assertion is now per-hand rather than on a global count.** A global count couples
+   each test to whatever else happens to be pending, which is exactly the coupling that made
+   this fail for a reason unrelated to the behaviour under test.
+
+**A deliberately unbalanced settlement is used to test the failure path** — the ledger refuses
+it, `attempts` increments, `applied_ledger_tx_id` stays null, and `findStuckSettlements`
+surfaces it. Losing a settlement silently would be worse than failing to post one.
+
+
 ---
 
 ## Invariant catalogue
@@ -829,3 +864,8 @@ against live data, because an invariant worth testing is worth monitoring.
 | I74 | A transaction is never rebuilt while its blockhash could still land | `withdrawals.test.ts › rebuilds only once the blockhash has provably expired` | F15 |
 | I75 | A transaction that lands despite a send error is confirmed, never re-sent | `withdrawals.test.ts › confirms a transaction that landed even though the send reported an error` | F15 |
 | I76 | A withdrawal that fails on chain is refunded exactly once | `withdrawals.test.ts › a transaction that lands and fails` | F15 |
+| I77 | Chips at a table are backed by an `in_play` ledger balance at all times | `bankroll.test.ts › chips at a table are already real money` | F16 |
+| I78 | A hand's deltas net to zero, so play never changes the ledger's total | `bankroll.test.ts › a real hand settles through to Postgres` | F16 |
+| I79 | A settled hand reaches the ledger exactly once, however often drained | `bankroll.test.ts › the settlement outbox` | F16 |
+| I80 | A settlement that cannot post is retried, never dropped | `bankroll.test.ts › keeps a settlement retryable when applying it fails` | F16 |
+| I81 | Chips stranded by a crash are returned at startup | `bankroll.test.ts › reconciling chips stranded by a crash` | F16 |

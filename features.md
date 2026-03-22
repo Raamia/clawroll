@@ -1224,3 +1224,49 @@ treasury is out of SOL for fees, or the destination cannot receive the token.
 | `apps/wallet-worker/src/withdrawals.ts` | `WithdrawalWorker`, the state machine, `WithdrawalGateway` |
 | `packages/db/src/migrate.ts` | `withdrawals` table — signature `UNIQUE`, `last_valid_block_height` |
 | `apps/wallet-worker/src/withdrawals.test.ts` | Unknown-fate recovery, expiry-gated rebuild, refunds |
+
+---
+
+### F16 — Bankroll service and settlement outbox (`apps/engine`)
+
+**What it does.** Bridges chips at a table and money in the ledger: buy-ins, cash-outs, and
+getting every settled hand into Postgres.
+
+**Why it is a separate layer rather than calls inside `TableRuntime`.**
+
+The runtime is a synchronous state machine, and that is load-bearing — no dangling promises
+on seats waiting to act, and a fake clock can drive a thousand hands in milliseconds. Putting
+`await ledger.settleHand(...)` inside it would destroy both properties for no gain.
+
+So the runtime keeps chips in memory and **emits** what it did as `LedgerEvent`s; the server
+drains them. **The runtime is authoritative for the duration of a hand; the ledger is
+authoritative for everything else.** Emissions are data rather than callbacks, which keeps
+the runtime testable with no I/O and makes a failed drain something the caller retries rather
+than an event lost inside a synchronous call stack.
+
+**Chips at a table are already real money.** A buy-in moves `available → in_play` *before*
+the seat exists. The chips a player bets with are ledger balances the whole time, not an IOU
+reconciled later. A hand then only moves value *between* `in_play` accounts, so the deltas
+net to zero and **the ledger's global total is untouched by play**, however the chips move.
+
+**The outbox, and the window it does not close.** A settled hand is written to
+`hand_settlements` and then posted. Because `Ledger.settleHand` is idempotent on the hand id,
+an interrupted post is simply retried.
+
+What it does **not** close: the process dying between the runtime settling in memory and the
+outbox row being written. The hand was broadcast but the ledger never hears about it.
+`reconcileOrphanedChips()` handles the aftermath at startup by returning chips from tables
+that no longer exist. Recorded as a **known limitation** rather than papered over — closing
+it properly means persisting the settlement before broadcasting, a larger change than devnet
+warrants today.
+
+**Reconciliation trusts the ledger, not the cached stack.** `table_seats` caches where chips
+sit, but that figure can predate the last settlement; `in_play` cannot.
+
+**Key files.**
+
+| File | Role |
+| --- | --- |
+| `apps/engine/src/bankroll.ts` | `BankrollService` — buy-in, cash-out, outbox, reconciliation |
+| `apps/engine/src/table.ts` | `LedgerEvent`, `drainLedgerEvents()` |
+| `packages/db/src/migrate.ts` | `hand_settlements` outbox and `table_seats` |
