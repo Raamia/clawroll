@@ -778,6 +778,49 @@ it, `attempts` increments, `applied_ledger_tx_id` stays null, and `findStuckSett
 surfaces it. Losing a settlement silently would be worse than failing to post one.
 
 
+### F17 — Server wired to the ledger
+
+**Suite:** `apps/engine/src/wired.test.ts` — 8 tests, real sockets and real Postgres together.
+
+| Group | What it protects |
+| --- | --- |
+| `buying in over a socket moves real money` | `available → in_play`; underfunded buy-ins refused and not seated; a failed seating hands the reservation back |
+| `leaving returns chips` | Explicit leave and disconnect both cash out |
+| `hands settle through to the ledger` | After real hands, `in_play` equals the stack the table is holding, holdings are conserved, ledger balanced |
+| `hand ids are globally unique` | Three server restarts produce three distinct ids |
+| `startup reconciliation` | Chips at a table this process does not serve are returned |
+
+**The bug this suite found is the most serious in the project so far.** Hand ids came from a
+per-process counter, so every restart re-issued `hand-1`, `hand-2`. Because the hand id *is*
+the settlement idempotency key — outbox `PRIMARY KEY` and ledger `external_ref` — a collision
+did not raise an error. `ON CONFLICT DO NOTHING` **silently discarded a real settlement**.
+
+Nothing below this layer could have caught it. Every unit test passed; the runtime was correct,
+the ledger was correct, the outbox was correct. It took an assertion that compared *the ledger*
+against *the table* to reveal that the two had quietly diverged. That comparison is now the
+suite's central assertion, and it counts how many agents it actually compared so it cannot pass
+vacuously.
+
+**Two test-quality lessons, both from failures here:**
+
+*Fixed sleeps are calibrated against an idle machine.* These tests initially used
+`await settle()` — a 400ms pause. They passed alone and failed in the full parallel run,
+because the buy-in had simply not finished yet. That looks exactly like a logic bug and is
+not. Every wait is now `waitUntil(condition)`, which is insensitive to machine load and fails
+with a real message when the condition genuinely never holds.
+
+*Parallel suites sharing one database must scope their cleanup.* Both this file and
+`bankroll.test.ts` cleared pending settlements in `beforeAll` with an unscoped
+`DELETE … WHERE applied_ledger_tx_id IS NULL` — **deleting each other's rows** mid-assertion.
+Both are now scoped to a per-run table id.
+
+**A known residual flake.** Across nine full-suite runs during development, one produced a
+`waitUntil` timeout that could not be reproduced in the following five. Five suites contend
+for one Postgres instance across parallel workers, so the polling budget is now deliberately
+generous (45s). Recorded rather than declared fixed: if it recurs, the real answer is
+per-worker schemas or serialising the database suites, not a larger number.
+
+
 ---
 
 ## Invariant catalogue
@@ -869,3 +912,8 @@ against live data, because an invariant worth testing is worth monitoring.
 | I79 | A settled hand reaches the ledger exactly once, however often drained | `bankroll.test.ts › the settlement outbox` | F16 |
 | I80 | A settlement that cannot post is retried, never dropped | `bankroll.test.ts › keeps a settlement retryable when applying it fails` | F16 |
 | I81 | Chips stranded by a crash are returned at startup | `bankroll.test.ts › reconciling chips stranded by a crash` | F16 |
+| I82 | A buy-in is taken from the ledger before a seat exists | `wired.test.ts › buying in over a socket moves real money` | F17 |
+| I83 | A failed seating never leaves money reserved | `wired.test.ts › hands the reservation back when seating fails` | F17 |
+| I84 | `in_play` always equals the stack the table is holding | `wired.test.ts › leaves in_play matching the stacks` | F17 |
+| I85 | Hand ids are globally unique across restarts and instances | `wired.test.ts › hand ids are globally unique` | F17 |
+| I86 | A drained ledger event is retried, never dropped | `server.ts › drainToLedger` `undrained` buffer | F17 |

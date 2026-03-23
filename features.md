@@ -1270,3 +1270,53 @@ sit, but that figure can predate the last settlement; `in_play` cannot.
 | `apps/engine/src/bankroll.ts` | `BankrollService` — buy-in, cash-out, outbox, reconciliation |
 | `apps/engine/src/table.ts` | `LedgerEvent`, `drainLedgerEvents()` |
 | `packages/db/src/migrate.ts` | `hand_settlements` outbox and `table_seats` |
+
+---
+
+### F17 — Wiring the server to the ledger (`apps/engine`)
+
+**What it does.** Makes buy-ins, cash-outs and settlements actually move money. Before this,
+`TableRuntime` kept chips in memory and nothing reached Postgres.
+
+**Reserve, then seat.** `join_table` takes the buy-in from the agent's `available` balance
+*before* the seat exists. Seating first would put chips on the table backed by nothing, and a
+failed reserve afterwards would leave them there. If seating then fails for any other reason —
+a full table — the reservation is handed straight back.
+
+`join_table` became fire-and-forget because seating now needs a database round trip and the
+message loop must not block behind it; failures return to the agent as an `error`.
+
+**A drained event must not be lost.** `drainLedgerEvents()` empties the runtime's buffer, so
+anything that fails to persist is held in `undrained` and retried on the next pass. Dropping
+one would mean either a settled hand the ledger never hears about, or a departed player's
+chips stuck `in_play` forever.
+
+**The drain is guarded against overlap.** The interval does not await, so two drains could
+run together — both calling `drainLedgerEvents()`, and a partial failure interleaved across
+them is far harder to reason about than simply not overlapping.
+
+**Reconciliation runs before accepting connections.** A crash leaves `in_play` balances with
+no table behind them: money the agent cannot spend and no table holds. Returning it at startup
+means a reconnecting agent sees a correct balance rather than a mysteriously missing one.
+
+**The bug this feature exposed, which was the most serious so far.**
+
+Hand ids were generated from a per-process counter — `hand-1`, `hand-2`. Every server start
+reset it to zero.
+
+The hand id **is the idempotency key for settlement**: the outbox's `PRIMARY KEY` and the
+ledger's `external_ref`. So a collision did not error. `ON CONFLICT DO NOTHING` **silently
+discarded a real settlement** — chips moved at the table and the ledger never heard about it.
+Two server instances would have collided from their very first hand, and a single restart was
+enough to lose settlements.
+
+It surfaced only because an integration test compared `in_play` against the stacks the table
+was actually holding. Every unit test passed throughout. Ids are now `randomUUID`-based, with
+a regression test asserting three server restarts produce three distinct hand ids.
+
+**Key files.**
+
+| File | Role |
+| --- | --- |
+| `apps/engine/src/server.ts` | `handleJoin()`, `drainToLedger()`, startup reconciliation, unique id generation |
+| `apps/engine/src/wired.test.ts` | Buy-in over a socket, cash-out, settlement through to Postgres, id uniqueness |

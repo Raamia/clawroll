@@ -9,6 +9,15 @@ let sql: Sql;
 let ledger: Ledger;
 let bankroll: BankrollService;
 
+/**
+ * Unique per run, and every write here is scoped to it.
+ *
+ * Vitest runs test files in parallel workers against one database, so an unscoped
+ * `DELETE FROM hand_settlements` in this file's setup would delete rows another file was
+ * mid-way through asserting on.
+ */
+const TABLE_ID = `bankroll_${randomUUID().slice(0, 8)}`;
+
 async function fundedAgent(micros: number): Promise<string> {
   const agentId = `agent_${randomUUID()}`;
   await sql`
@@ -36,7 +45,9 @@ beforeAll(async () => {
   // The outbox is shared and `applyPendingSettlements` drains all of it, so a row left
   // permanently unappliable by an earlier run would make every drain here report a
   // failure. Clearing orphans keeps the suite independent of previous runs.
-  await sql`DELETE FROM hand_settlements WHERE applied_ledger_tx_id IS NULL`;
+  await sql`
+    DELETE FROM hand_settlements
+    WHERE applied_ledger_tx_id IS NULL AND table_id = ${TABLE_ID}`;
 }, 30_000);
 
 afterAll(async () => {
@@ -48,7 +59,7 @@ describe('chips at a table are already real money', () => {
     // Not an IOU reconciled later: the chips a player bets with are ledger balances the
     // whole time.
     const agentId = await fundedAgent(10_000_000);
-    await bankroll.reserveBuyIn(agentId, 't1', 4_000_000);
+    await bankroll.reserveBuyIn(agentId, TABLE_ID, 4_000_000);
 
     expect(await ledger.balanceOfAgent(agentId, 'available')).toBe(6_000_000);
     expect(await ledger.balanceOfAgent(agentId, 'in_play')).toBe(4_000_000);
@@ -57,7 +68,7 @@ describe('chips at a table are already real money', () => {
 
   it('refuses a buy-in the agent cannot cover', async () => {
     const agentId = await fundedAgent(1_000_000);
-    await expect(bankroll.reserveBuyIn(agentId, 't1', 5_000_000)).rejects.toThrow(
+    await expect(bankroll.reserveBuyIn(agentId, TABLE_ID, 5_000_000)).rejects.toThrow(
       /insufficient funds/,
     );
     expect(await ledger.balanceOfAgent(agentId, 'in_play')).toBe(0);
@@ -65,12 +76,12 @@ describe('chips at a table are already real money', () => {
 
   it.each([0, -5, 1.5])('refuses a buy-in of %s', async (amount) => {
     const agentId = await fundedAgent(1_000_000);
-    await expect(bankroll.reserveBuyIn(agentId, 't1', amount)).rejects.toThrow(BankrollError);
+    await expect(bankroll.reserveBuyIn(agentId, TABLE_ID, amount)).rejects.toThrow(BankrollError);
   });
 
   it('returns chips when a player leaves', async () => {
     const agentId = await fundedAgent(10_000_000);
-    await bankroll.reserveBuyIn(agentId, 't1', 4_000_000);
+    await bankroll.reserveBuyIn(agentId, TABLE_ID, 4_000_000);
     await bankroll.releaseChips(agentId, 4_000_000, `leave:${randomUUID()}`);
 
     expect(await ledger.balanceOfAgent(agentId, 'available')).toBe(10_000_000);
@@ -87,13 +98,13 @@ describe('the settlement outbox', () => {
   it('records and then applies a settlement', async () => {
     const alice = await fundedAgent(10_000_000);
     const bob = await fundedAgent(10_000_000);
-    await bankroll.reserveBuyIn(alice, 't1', 5_000_000);
-    await bankroll.reserveBuyIn(bob, 't1', 5_000_000);
+    await bankroll.reserveBuyIn(alice, TABLE_ID, 5_000_000);
+    await bankroll.reserveBuyIn(bob, TABLE_ID, 5_000_000);
 
     const handId = `hand_${randomUUID()}`;
     await bankroll.recordSettlement({
       handId,
-      tableId: 't1',
+      tableId: TABLE_ID,
       deltas: [
         { agentId: alice, amountMicros: 1_500_000 },
         { agentId: bob, amountMicros: -1_500_000 },
@@ -116,13 +127,13 @@ describe('the settlement outbox', () => {
     // The drain runs on a loop, so this is the normal case rather than an edge one.
     const alice = await fundedAgent(10_000_000);
     const bob = await fundedAgent(10_000_000);
-    await bankroll.reserveBuyIn(alice, 't1', 5_000_000);
-    await bankroll.reserveBuyIn(bob, 't1', 5_000_000);
+    await bankroll.reserveBuyIn(alice, TABLE_ID, 5_000_000);
+    await bankroll.reserveBuyIn(bob, TABLE_ID, 5_000_000);
 
     const handId = `hand_${randomUUID()}`;
     await bankroll.recordSettlement({
       handId,
-      tableId: 't1',
+      tableId: TABLE_ID,
       deltas: [
         { agentId: alice, amountMicros: 900_000 },
         { agentId: bob, amountMicros: -900_000 },
@@ -140,13 +151,13 @@ describe('the settlement outbox', () => {
   it('ignores a duplicate record of the same hand', async () => {
     const alice = await fundedAgent(10_000_000);
     const bob = await fundedAgent(10_000_000);
-    await bankroll.reserveBuyIn(alice, 't1', 5_000_000);
-    await bankroll.reserveBuyIn(bob, 't1', 5_000_000);
+    await bankroll.reserveBuyIn(alice, TABLE_ID, 5_000_000);
+    await bankroll.reserveBuyIn(bob, TABLE_ID, 5_000_000);
 
     const handId = `hand_${randomUUID()}`;
     const settlement = {
       handId,
-      tableId: 't1',
+      tableId: TABLE_ID,
       deltas: [
         { agentId: alice, amountMicros: 250_000 },
         { agentId: bob, amountMicros: -250_000 },
@@ -167,7 +178,7 @@ describe('the settlement outbox', () => {
     const handId = `hand_${randomUUID()}`;
     await bankroll.recordSettlement({
       handId,
-      tableId: 't1',
+      tableId: TABLE_ID,
       // Unbalanced on purpose, so the ledger rejects it.
       deltas: [{ agentId: alice, amountMicros: 1_000_000 }],
       rakeMicros: 0,
@@ -190,7 +201,7 @@ describe('the settlement outbox', () => {
 
   it('skips a settlement where nothing actually moved', async () => {
     const handId = `hand_${randomUUID()}`;
-    await bankroll.recordSettlement({ handId, tableId: 't1', deltas: [], rakeMicros: 0 });
+    await bankroll.recordSettlement({ handId, tableId: TABLE_ID, deltas: [], rakeMicros: 0 });
     const rows = await sql`SELECT 1 FROM hand_settlements WHERE hand_id = ${handId}`;
     expect(rows).toHaveLength(0);
   });
@@ -234,7 +245,7 @@ describe('reconciling chips stranded by a crash', () => {
 
 describe('a real hand settles through to Postgres', () => {
   const CONFIG: TableConfig = {
-    tableId: 'wired',
+    tableId: `${TABLE_ID}_play`,
     smallBlind: 50_000,
     bigBlind: 100_000,
     maxSeats: 6,

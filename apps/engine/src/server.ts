@@ -25,11 +25,13 @@
  * thing drivable by a fake clock in tests.
  */
 
+import { randomUUID } from 'node:crypto';
 import { createServer, type Server } from 'node:http';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { parseClientMessage, PROTOCOL_VERSION, type ServerMessage } from '@clawroll/protocol';
 import type { AgentDirectory, AgentRecord } from './auth.js';
-import { type TableConfig, type TableIO, TableRuntime } from './table.js';
+import type { BankrollService } from './bankroll.js';
+import { type LedgerEvent, type TableConfig, type TableIO, TableRuntime } from './table.js';
 
 export interface ServerConfig {
   readonly port: number;
@@ -71,13 +73,26 @@ export class ClawrollServer {
   private readonly connections = new Map<WebSocket, Connection>();
   private readonly agentSockets = new Map<string, WebSocket>();
   private ticker: NodeJS.Timeout | null = null;
-  private ids = 0;
+  private draining = false;
+  /**
+   * Events drained from the runtime but not yet durable.
+   *
+   * `drainLedgerEvents()` empties the runtime's buffer, so anything that fails to persist
+   * has to be held here — dropping it would lose a settled hand or leave a departed
+   * player's chips stuck `in_play`.
+   */
+  private readonly undrained: LedgerEvent[] = [];
 
   readonly table: TableRuntime;
 
   constructor(
     private readonly config: ServerConfig,
     private readonly directory: AgentDirectory,
+    /**
+     * Omit to run with in-memory chips only — which is what the protocol and gameplay
+     * tests do, since they have nothing to say about money.
+     */
+    private readonly bankroll: BankrollService | null = null,
   ) {
     const io: TableIO = {
       send: (agentId, message) => this.sendTo(agentId, message),
@@ -87,7 +102,18 @@ export class ClawrollServer {
     this.table = new TableRuntime(config.table, {
       io,
       now: () => Date.now(),
-      nextId: (prefix) => `${prefix}-${++this.ids}`,
+      // Globally unique, not a per-process counter.
+      //
+      // A counter restarts at zero on every boot, so a restarted server re-issues
+      // `hand-1`, `hand-2`, … Hand ids are the idempotency key for settlement — both in
+      // the outbox's PRIMARY KEY and in the ledger's `external_ref` — so a collision does
+      // not error, it makes `ON CONFLICT DO NOTHING` **silently discard a real
+      // settlement**. Chips move at the table and the ledger never hears about it.
+      //
+      // Hand ids are also published in hand histories and used for verification, where a
+      // collision would make the record ambiguous. Two server instances would collide from
+      // their very first hand.
+      nextId: (prefix) => `${prefix}_${randomUUID()}`,
     });
 
     this.http = createServer((req, res) => {
@@ -112,6 +138,19 @@ export class ClawrollServer {
   }
 
   async start(): Promise<number> {
+    // A crash leaves in_play balances with no table behind them: money the agent cannot
+    // spend and no table holds. Returning it before accepting connections means a
+    // reconnecting agent sees a correct balance rather than a mysteriously missing one.
+    if (this.bankroll) {
+      const reconciled = await this.bankroll.reconcileOrphanedChips([this.config.table.tableId]);
+      if (reconciled.agentsRestored > 0) {
+        console.warn(
+          `[clawroll] returned ${reconciled.microsRestored} micro-USDC stranded at dead tables ` +
+            `for ${reconciled.agentsRestored} agent(s)`,
+        );
+      }
+    }
+
     await new Promise<void>((resolve) => this.http.listen(this.config.port, resolve));
     this.ticker = setInterval(() => this.tick(), this.config.tickIntervalMs);
     const address = this.http.address();
@@ -128,11 +167,56 @@ export class ClawrollServer {
     await new Promise<void>((resolve) => this.http.close(() => resolve()));
   }
 
-  /** One pass: enforce deadlines, then deal a hand if the table is idle and able. */
+  /** One pass: enforce deadlines, deal if idle, then get what happened into Postgres. */
   private tick(): void {
     this.table.tick();
     if (this.config.autoStartHands && this.table.currentPhase === 'idle') {
       this.table.startHand();
+    }
+    void this.drainToLedger();
+  }
+
+  /**
+   * Persist everything the table has done since the last pass.
+   *
+   * Guarded against overlap because the interval does not await: two drains running
+   * together would both call `drainLedgerEvents()`, and while the ledger would refuse the
+   * duplicates, the second drain could interleave a partial failure in a way that is far
+   * harder to reason about than simply not overlapping.
+   */
+  private async drainToLedger(): Promise<void> {
+    if (this.bankroll === null || this.draining) return;
+    this.draining = true;
+
+    try {
+      // Anything held over from a failed pass goes first, so ordering is preserved.
+      const events = [...this.undrained.splice(0), ...this.table.drainLedgerEvents()];
+
+      for (const event of events) {
+        try {
+          if (event.type === 'hand_settled') {
+            await this.bankroll.recordSettlement(event);
+          } else {
+            await this.bankroll.releaseChips(
+              event.agentId,
+              event.stack,
+              `release:${event.tableId}:${event.agentId}:${this.table.handCount}`,
+            );
+            await this.bankroll.untrackSeat(event.tableId, event.agentId);
+          }
+        } catch (error) {
+          // Hold it rather than drop it: a lost settlement is money that silently never
+          // moved, and a lost release leaves a departed player's chips stuck in_play.
+          this.undrained.push(event);
+          console.error(`[clawroll] deferring ledger event: ${(error as Error).message}`);
+        }
+      }
+
+      await this.bankroll.applyPendingSettlements();
+    } catch (error) {
+      console.error(`[clawroll] ledger drain failed: ${(error as Error).message}`);
+    } finally {
+      this.draining = false;
     }
   }
 
@@ -207,16 +291,11 @@ export class ClawrollServer {
     const message = parsed.message;
 
     switch (message.type) {
-      case 'join_table': {
-        const result =
-          message.seat !== undefined
-            ? this.table.seat(agentId, displayName, message.buyIn, message.seat)
-            : this.table.seat(agentId, displayName, message.buyIn);
-        if (!result.ok) {
-          this.write(socket, { type: 'error', code: result.code, message: result.message });
-        }
+      case 'join_table':
+        // Fire and forget: seating now needs a database round trip, and the message loop
+        // must not block behind it. Failures come back to the agent as an `error`.
+        void this.handleJoin(socket, agentId, displayName, message.buyIn, message.seat);
         break;
-      }
       case 'client_seed':
         this.table.submitSeed(agentId, message.handId, message.seed);
         break;
@@ -234,6 +313,50 @@ export class ClawrollServer {
       case 'ping':
         this.write(socket, { type: 'pong', nonce: message.nonce, serverTime: Date.now() });
         break;
+    }
+  }
+
+  /**
+   * Seat an agent, taking the buy-in from their ledger balance first.
+   *
+   * The order matters: reserve, then seat. Seating first would put chips on the table that
+   * are not backed by anything, and a failed reserve afterwards would leave them there.
+   * If seating fails for some other reason the reservation is handed straight back.
+   */
+  private async handleJoin(
+    socket: WebSocket,
+    agentId: string,
+    displayName: string,
+    buyIn: number,
+    preferredSeat?: number,
+  ): Promise<void> {
+    try {
+      if (this.bankroll) {
+        await this.bankroll.reserveBuyIn(agentId, this.config.table.tableId, buyIn);
+      }
+
+      const result =
+        preferredSeat !== undefined
+          ? this.table.seat(agentId, displayName, buyIn, preferredSeat)
+          : this.table.seat(agentId, displayName, buyIn);
+
+      if (!result.ok) {
+        if (this.bankroll) {
+          await this.bankroll.releaseChips(agentId, buyIn, `join-failed:${agentId}:${Date.now()}`);
+        }
+        this.write(socket, { type: 'error', code: result.code, message: result.message });
+        return;
+      }
+
+      if (this.bankroll) {
+        await this.bankroll.trackSeat(this.config.table.tableId, agentId, result.seat, buyIn);
+      }
+    } catch (error) {
+      this.write(socket, {
+        type: 'error',
+        code: 'insufficient_funds',
+        message: (error as Error).message,
+      });
     }
   }
 
