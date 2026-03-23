@@ -26,9 +26,10 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { createServer, type Server } from 'node:http';
+import { createServer, type Server, type ServerResponse } from 'node:http';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { parseClientMessage, PROTOCOL_VERSION, type ServerMessage } from '@clawroll/protocol';
+import type { HandArchive } from './archive.js';
 import type { AgentDirectory, AgentRecord } from './auth.js';
 import type { BankrollService } from './bankroll.js';
 import { type LedgerEvent, type TableConfig, type TableIO, TableRuntime } from './table.js';
@@ -93,6 +94,8 @@ export class ClawrollServer {
      * tests do, since they have nothing to say about money.
      */
     private readonly bankroll: BankrollService | null = null,
+    /** Omit to run without a public archive; the read API then reports nothing. */
+    private readonly archive: HandArchive | null = null,
   ) {
     const io: TableIO = {
       send: (agentId, message) => this.sendTo(agentId, message),
@@ -117,16 +120,7 @@ export class ClawrollServer {
     });
 
     this.http = createServer((req, res) => {
-      // Health check for the ALB. Deliberately does not touch the table — a wedged hand
-      // must not make the container look dead and trigger a redeploy loop. Scoped to one
-      // path so an unknown route is a clear 404 rather than a misleading 200.
-      if ((req.url ?? '').split('?')[0] === '/healthz') {
-        res.writeHead(200, { 'content-type': 'application/json' });
-        res.end(JSON.stringify({ ok: true, protocolVersion: PROTOCOL_VERSION }));
-        return;
-      }
-      res.writeHead(404, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({ error: 'not found' }));
+      void this.handleHttp(req.url ?? '/', res);
     });
 
     this.wss = new WebSocketServer({
@@ -135,6 +129,95 @@ export class ClawrollServer {
     });
 
     this.wss.on('connection', (socket, request) => this.onConnection(socket, request.url ?? '/'));
+  }
+
+  /**
+   * The public read API.
+   *
+   * Read-only and unauthenticated by design: every hand Clawroll has ever dealt is public,
+   * and requiring a credential to check our work would defeat the point of publishing it.
+   */
+  private async handleHttp(url: string, res: ServerResponse): Promise<void> {
+    const path = (url.split('?')[0] ?? '/').replace(/\/$/, '') || '/';
+    const json = (status: number, body: unknown): void => {
+      res.writeHead(status, {
+        'content-type': 'application/json',
+        // The spectator app is served from a different origin.
+        'access-control-allow-origin': '*',
+      });
+      res.end(JSON.stringify(body));
+    };
+
+    try {
+      // Deliberately does not touch the table: a wedged hand must not make the container
+      // look dead and trigger a redeploy loop.
+      if (path === '/healthz') {
+        json(200, { ok: true, protocolVersion: PROTOCOL_VERSION });
+        return;
+      }
+
+      if (path === '/api/tables') {
+        json(200, { tables: [this.table.tableState()] });
+        return;
+      }
+
+      // Routes below need the archive. The check is per-route rather than a single early
+      // return, because an early return also swallows genuinely unknown paths and answers
+      // 503 where the honest answer is 404 — which is exactly what it did until a test
+      // caught it. "I am not configured for that" and "there is no such thing" are
+      // different answers and a client will act on them differently.
+      const archiveRoutes =
+        path === '/api/hands' ||
+        path === '/api/leaderboard' ||
+        /^\/api\/(hands|agents)\/[^/]+(\/proof)?$/.test(path);
+
+      if (archiveRoutes && this.archive === null) {
+        json(503, { error: 'no hand archive configured' });
+        return;
+      }
+      if (this.archive === null) {
+        json(404, { error: 'not found' });
+        return;
+      }
+
+      if (path === '/api/hands') {
+        json(200, { hands: await this.archive.recent(50) });
+        return;
+      }
+
+      if (path === '/api/leaderboard') {
+        json(200, { leaderboard: await this.archive.leaderboard() });
+        return;
+      }
+
+      const proofMatch = /^\/api\/hands\/([^/]+)\/proof$/.exec(path);
+      if (proofMatch) {
+        const proof = await this.archive.proofFor(decodeURIComponent(proofMatch[1]!));
+        proof ? json(200, proof) : json(404, { error: 'no such hand' });
+        return;
+      }
+
+      const handMatch = /^\/api\/hands\/([^/]+)$/.exec(path);
+      if (handMatch) {
+        const hand = await this.archive.get(decodeURIComponent(handMatch[1]!));
+        hand ? json(200, hand) : json(404, { error: 'no such hand' });
+        return;
+      }
+
+      const agentMatch = /^\/api\/agents\/([^/]+)$/.exec(path);
+      if (agentMatch) {
+        const agentId = decodeURIComponent(agentMatch[1]!);
+        json(200, {
+          agentId,
+          hands: await this.archive.handsForAgent(agentId),
+        });
+        return;
+      }
+
+      json(404, { error: 'not found' });
+    } catch (error) {
+      json(500, { error: (error as Error).message });
+    }
   }
 
   async start(): Promise<number> {
@@ -185,10 +268,24 @@ export class ClawrollServer {
    * harder to reason about than simply not overlapping.
    */
   private async drainToLedger(): Promise<void> {
-    if (this.bankroll === null || this.draining) return;
+    if (this.draining) return;
     this.draining = true;
 
     try {
+      // Published first. A hand that settled but was never archived is invisible: nobody
+      // can replay it and nobody can verify it, which is worse than a settlement that is
+      // merely late, since that one at least retries.
+      if (this.archive) {
+        for (const record of this.table.drainHandRecords()) {
+          try {
+            await this.archive.record(record);
+          } catch (error) {
+            console.error(`[clawroll] failed to archive ${record.handId}: ${(error as Error).message}`);
+          }
+        }
+      }
+
+      if (this.bankroll === null) return;
       // Anything held over from a failed pass goes first, so ordering is preserved.
       const events = [...this.undrained.splice(0), ...this.table.drainLedgerEvents()];
 

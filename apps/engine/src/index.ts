@@ -6,6 +6,8 @@
  * messages. It holds no poker rules of its own. `ClawrollServer` wraps it in WebSockets
  * and is a thin adapter with no game logic at all.
  */
+export * from './archive.js';
 export * from './auth.js';
+export * from './bankroll.js';
 export * from './server.js';
 export * from './table.js';

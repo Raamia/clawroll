@@ -821,6 +821,45 @@ generous (45s). Recorded rather than declared fixed: if it recurs, the real answ
 per-worker schemas or serialising the database suites, not a larger number.
 
 
+### F18 — Hand archive and read API
+
+**Suite:** `apps/engine/src/archive.test.ts` — 14 tests, real Postgres and real HTTP.
+
+| Group | What it protects |
+| --- | --- |
+| `publishing a hand` | Full round-trip; written once and never updated; unknown hands return null; folded seats keep their cards private |
+| `proofs` | Exactly the fields a verifier needs, and explicitly *not* pot/winners/stacks |
+| `listings` | Recent hands with pot and winners; leaderboard ranking |
+| `publicly verifiable` | A hand played by the engine, archived, fetched over HTTP, and verified from the downloaded proof |
+| `the read API` | Unauthenticated, CORS-open, 404s unknown hands and routes, health check intact |
+
+**The test that closes the public loop.** `is archived, served over HTTP, and verifies from
+the served proof` plays a real hand through the server, waits for it to be archived, then
+**fetches the proof over HTTP exactly as a stranger would** and runs it through `verifyHand`.
+
+The distinction matters: earlier tests proved the engine *could* produce a verifiable hand.
+This one proves the artefact a member of the public actually downloads verifies. It also
+asserts which checks ran, since `ok` is vacuously true for an empty check list.
+
+**Two bugs found here, both about honest answers:**
+
+*The router returned 503 for unknown paths.* The archive-configured check ran before route
+matching, so `/api/nope` answered "no hand archive configured" rather than "not found". A
+client acts differently on those. Caught by an existing test from F10 — an older test failing
+because of a new feature is the system working.
+
+*The leaderboard test asserted on a global aggregate.* It fetched an unscoped top-25 across
+every hand ever archived, so as the database filled the fixtures dropped off the end and the
+test failed for a reason unrelated to ranking. **This is the third time the same trap has
+appeared in this project** — after the global settlement drain and the unscoped `DELETE`.
+The rule, now applied consistently: *never assert on a global aggregate in a shared database.*
+`leaderboard()` gained a table filter, which the product wants anyway for per-table standings.
+
+**Immutability has its own test** — re-recording a hand with a different board must not change
+the stored one. Without it, an upsert introduced later would silently make every published
+history editable, and verification would become theatre.
+
+
 ---
 
 ## Invariant catalogue
@@ -917,3 +956,8 @@ against live data, because an invariant worth testing is worth monitoring.
 | I84 | `in_play` always equals the stack the table is holding | `wired.test.ts › leaves in_play matching the stacks` | F17 |
 | I85 | Hand ids are globally unique across restarts and instances | `wired.test.ts › hand ids are globally unique` | F17 |
 | I86 | A drained ledger event is retried, never dropped | `server.ts › drainToLedger` `undrained` buffer | F17 |
+| I87 | A published hand is written once and can never be edited | `archive.test.ts › is written once and never updated` | F18 |
+| I88 | The archive records what was shown publicly, never what the server knew | `archive.test.ts › keeps hole cards null for seats that never showed` | F18 |
+| I89 | A proof served over HTTP verifies against `clawroll-verify` | `archive.test.ts › verifies from the served proof` | F18 |
+| I90 | The public read API needs no credential | `archive.test.ts › the read API` | F18 |
+| I91 | The leaderboard is derived from published hands, not the ledger | `archive.ts › leaderboard()` | F18 |

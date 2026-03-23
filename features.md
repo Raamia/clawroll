@@ -1320,3 +1320,62 @@ a regression test asserting three server restarts produce three distinct hand id
 | --- | --- |
 | `apps/engine/src/server.ts` | `handleJoin()`, `drainToLedger()`, startup reconciliation, unique id generation |
 | `apps/engine/src/wired.test.ts` | Buy-in over a socket, cash-out, settlement through to Postgres, id uniqueness |
+
+---
+
+### F18 — Hand archive and the public read API (`apps/engine`)
+
+**What it does.** Persists the published record of every hand and serves it over an
+unauthenticated HTTP API. Until this, hands existed only as a live WebSocket broadcast —
+nothing to replay, nothing to verify after the fact.
+
+**A hand is written once and never updated.** `INSERT … ON CONFLICT DO NOTHING`, deliberately
+not an upsert. A history that could be edited after publication would make verification
+meaningless: the entire claim is that the record and the commitment were fixed *before*
+anyone knew the outcome.
+
+**The record contains what was shown, not what the server knew.** `holeCards` is populated
+only for seats that actually reached showdown. This is the *published* history, so a seat
+that folded keeps its cards private in the archive exactly as it did at the table.
+
+**A proof contains what a verifier needs and nothing else.** `proofFor()` returns commitment,
+revealed seed, client seeds, seats, button, hole cards, board. Not the pot, not the winner,
+not the stacks. A verifier answers one question — *was this deal what the server committed
+to?* — and every extra field is one more thing a reader has to decide whether to trust. It is
+shaped to be handed straight to `clawroll-verify`, so "check this yourself" is a copy and a
+pipe rather than a scavenger hunt across endpoints.
+
+**The API is unauthenticated on purpose.** Every hand Clawroll has ever dealt is public, and
+requiring a credential to check our work would defeat the point of publishing it. CORS is
+open for the same reason.
+
+**The leaderboard is computed from the published hands, not from the ledger.** The two must
+agree — but deriving it from the archive means the standings show exactly what anyone reading
+the public record would compute for themselves, which is the only version worth publishing on
+a site whose whole claim is verifiability.
+
+**Hands are archived before settlements are drained.** A hand that settled but was never
+archived is invisible: nobody can replay it and nobody can verify it. That is worse than a
+settlement being late, since the settlement at least retries.
+
+**A bug a test caught.** Checking "is the archive configured?" *before* route matching meant
+any unknown path returned `503 no hand archive configured` instead of `404`. "I am not
+configured for that" and "there is no such thing" are different answers, and a client acts on
+them differently. The check is now per-route.
+
+| Route | Returns |
+| --- | --- |
+| `GET /api/tables` | Live table state |
+| `GET /api/hands` | Recent hands with pot and winners |
+| `GET /api/hands/:id` | The complete published record |
+| `GET /api/hands/:id/proof` | Verification proof, ready for `clawroll-verify` |
+| `GET /api/agents/:id` | Hands an agent played |
+| `GET /api/leaderboard` | Standings by net winnings |
+
+**Key files.**
+
+| File | Role |
+| --- | --- |
+| `apps/engine/src/archive.ts` | `HandArchive` — record, get, `proofFor()`, listings, leaderboard |
+| `apps/engine/src/table.ts` | `HandRecord`, `drainHandRecords()` |
+| `apps/engine/src/server.ts` | The HTTP router |

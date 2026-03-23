@@ -110,6 +110,8 @@ interface ActiveHand {
   readonly seedDeadline: number;
   /** Stack per seat as the hand began — the baseline every settlement delta is measured from. */
   readonly startingStacks: Map<number, number>;
+  /** Ordered betting log, sufficient to replay the hand exactly. */
+  readonly actionLog: { seat: number; action: ActionType; amount: number; street: Street }[];
   state: HandState | null;
   requestId: string | null;
   actionDeadline: number;
@@ -122,6 +124,41 @@ interface ActiveHand {
  * and the server drains these. Keeping them as data rather than callbacks means the runtime
  * stays testable with no I/O at all, and a drain that fails can simply be retried.
  */
+/**
+ * The published record of a finished hand.
+ *
+ * Everything a third party needs to replay the betting and verify the deal, and nothing
+ * else. `holeCards` is populated only for seats that actually reached showdown, because
+ * this is the *published* history: it must contain what was shown, not what the server
+ * knew.
+ */
+export interface HandRecord {
+  readonly handId: string;
+  readonly tableId: string;
+  readonly buttonSeat: number;
+  readonly smallBlind: number;
+  readonly bigBlind: number;
+  readonly commitment: string;
+  readonly serverSeed: string;
+  readonly clientSeeds: readonly { seat: number; seed: string }[];
+  readonly board: string;
+  readonly seats: readonly {
+    seat: number;
+    agentId: string;
+    startingStack: number;
+    finalStack: number;
+    holeCards: string | null;
+  }[];
+  readonly actions: readonly {
+    seat: number;
+    action: ActionType;
+    amount: number;
+    street: Street;
+  }[];
+  readonly pots: readonly { amount: number; eligibleSeats: number[] }[];
+  readonly awards: readonly { seat: number; amount: number; potIndex: number }[];
+}
+
 export type LedgerEvent =
   | {
       readonly type: 'hand_settled';
@@ -152,6 +189,8 @@ export class TableRuntime {
   private chipsCashedOut = 0;
   /** Drained by the server and applied to the ledger. See `LedgerEvent`. */
   private ledgerEvents: LedgerEvent[] = [];
+  /** Drained by the server and written to the hand archive. */
+  private handRecords: HandRecord[] = [];
 
   constructor(
     private readonly config: TableConfig,
@@ -261,6 +300,7 @@ export class TableRuntime {
       clientSeeds: new Map(),
       seatToAgent: new Map(playable.map((s) => [s, this.seats[s]!.agentId])),
       startingStacks: new Map(playable.map((s) => [s, this.seats[s]!.stack])),
+      actionLog: [],
       seedDeadline,
       state: null,
       requestId: null,
@@ -489,6 +529,12 @@ export class TableRuntime {
 
     for (const event of result.events) {
       if (event.type === 'action') {
+        hand.actionLog.push({
+          seat: event.seat,
+          action: event.action,
+          amount: event.amount,
+          street: before.street as Street,
+        });
         this.deps.io.broadcast({
           type: 'action_taken',
           handId: hand.handId,
@@ -549,6 +595,37 @@ export class TableRuntime {
         .map(([seat, seed]) => ({ seat, seed }))
         .sort((a, b) => a.seat - b.seat),
       stacks: result.seats.map((s) => ({ seat: s.seat, stack: s.stack })),
+    });
+
+    // The published record. Hole cards appear only for seats that reached showdown —
+    // this is the *published* history, so it must contain exactly what was shown publicly
+    // and nothing the server merely happened to know.
+    this.handRecords.push({
+      handId: hand.handId,
+      tableId: this.config.tableId,
+      buttonSeat: this.buttonSeat,
+      smallBlind: this.config.smallBlind,
+      bigBlind: this.config.bigBlind,
+      commitment: hand.commitment.commit,
+      serverSeed: hand.commitment.serverSeed,
+      clientSeeds: [...hand.clientSeeds.entries()]
+        .map(([seat, seed]) => ({ seat, seed }))
+        .sort((a, b) => a.seat - b.seat),
+      board: cardsToString(state.board),
+      seats: [...hand.seatToAgent.entries()]
+        .sort(([a], [b]) => a - b)
+        .map(([seat, agentId]) => ({
+          seat,
+          agentId,
+          startingStack: hand.startingStacks.get(seat) ?? 0,
+          finalStack: result.seats.find((s) => s.seat === seat)?.stack ?? 0,
+          holeCards: result.hands.has(seat)
+            ? cardsToString(state.seats.find((s) => s.seat === seat)!.holeCards!)
+            : null,
+        })),
+      actions: [...hand.actionLog],
+      pots: result.pots.map((p) => ({ amount: p.amount, eligibleSeats: [...p.eligibleSeats] })),
+      awards: result.awards.map((a) => ({ seat: a.seat, amount: a.amount, potIndex: a.potIndex })),
     });
 
     // A hand only ever moves value between the seated players, so the deltas sum to zero
@@ -678,6 +755,13 @@ export class TableRuntime {
     const events = this.ledgerEvents;
     this.ledgerEvents = [];
     return events;
+  }
+
+  /** Take the published records of every hand finished since the last drain. */
+  drainHandRecords(): HandRecord[] {
+    const records = this.handRecords;
+    this.handRecords = [];
+    return records;
   }
 
   // Inspection hooks for tests and for the spectator API.

@@ -158,6 +158,38 @@ export const MIGRATIONS: readonly { name: string; sql: string }[] = [
       );
     `,
   },
+  {
+    name: '004_hands',
+    sql: /* sql */ `
+      -- The published record of a hand: everything a third party needs to replay it and
+      -- to verify the deal, with nothing else required.
+      --
+      -- Written once, at settlement, and never updated. A hand history that could be
+      -- edited after publication would make verification meaningless — the point is that
+      -- the record and the commitment were fixed before anyone knew the outcome.
+      CREATE TABLE IF NOT EXISTS hands (
+        id            TEXT PRIMARY KEY,
+        table_id      TEXT NOT NULL,
+        button_seat   INTEGER NOT NULL,
+        small_blind   BIGINT NOT NULL,
+        big_blind     BIGINT NOT NULL,
+        -- Published before the deal; the seed is revealed only once the hand is over.
+        commitment    TEXT NOT NULL,
+        server_seed   TEXT NOT NULL,
+        client_seeds  JSONB NOT NULL,
+        board         TEXT NOT NULL DEFAULT '',
+        -- Per seat: agent, starting stack, final stack, and hole cards where shown.
+        seats         JSONB NOT NULL,
+        -- Ordered action log, sufficient to replay the betting exactly.
+        actions       JSONB NOT NULL,
+        pots          JSONB NOT NULL,
+        awards        JSONB NOT NULL,
+        ended_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+      CREATE INDEX IF NOT EXISTS hands_table_idx ON hands (table_id, ended_at DESC);
+      CREATE INDEX IF NOT EXISTS hands_ended_idx ON hands (ended_at DESC);
+    `,
+  },
 ];
 
 /** Apply any migration that has not run. Safe to call repeatedly. */
@@ -186,7 +218,7 @@ export async function migrate(sql: Sql): Promise<string[]> {
 /** Drop everything. Test-only — it is deliberately explicit about being destructive. */
 export async function dropAllTablesForTests(sql: Sql): Promise<void> {
   await sql.unsafe(`
-    DROP TABLE IF EXISTS table_seats, hand_settlements, withdrawals, deposit_sightings,
+    DROP TABLE IF EXISTS hands, table_seats, hand_settlements, withdrawals, deposit_sightings,
       ledger_entries, ledger_txs, accounts, agents, schema_migrations CASCADE;
     DROP TYPE IF EXISTS account_type, ledger_kind, withdrawal_status CASCADE;
   `);
