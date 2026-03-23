@@ -1379,3 +1379,62 @@ them differently. The check is now per-route.
 | `apps/engine/src/archive.ts` | `HandArchive` — record, get, `proofFor()`, listings, leaderboard |
 | `apps/engine/src/table.ts` | `HandRecord`, `drainHandRecords()` |
 | `apps/engine/src/server.ts` | The HTTP router |
+
+---
+
+### F19 — Spectator web app (`apps/web`)
+
+**What it does.** The public face: a live table, hand replays, a leaderboard, and a
+verification page. Vite + React, no framework beyond that, served as a static bundle.
+
+**The live view has to reconstruct state from the event stream.** `table_state` only arrives
+when seats change or a hand settles; everything *during* a hand comes as `hand_start`,
+`action_taken`, `street` and `showdown`. The first version listened only for `table_state`
+and showed an empty board and a zero pot while a hand played out in front of the viewer. The
+page now folds each message into its own state, which is what makes the felt actually live.
+
+**It cannot show live hole cards even if it wanted to.** The `/spectate` stream never carries
+them, so face-down on this page is face-down all the way down. The one moment cards become
+public is `showdown`, and the replay page shows them only where the archive has them — which
+is only where they were shown at the table. Folded hands stay face down forever.
+
+**Why there is no green tick on the verification page.**
+
+The obvious design is a Verify button that prints VERIFIED. This page deliberately refuses,
+and the reasoning is the whole feature:
+
+> A verification result rendered by Clawroll's own website is worth nothing. The page is
+> served by us; anyone willing to rig a deal would be willing to print a checkmark. Asking a
+> reader to trust our page to tell them our server is honest is circular — and a green tick
+> makes it *look* like evidence when it is not.
+
+So the page hands over the complete proof and the exact command to check it with an
+independent tool on the reader's own machine. A weaker-looking interaction and a much
+stronger guarantee.
+
+**The command shown must actually run.** It initially read `npx clawroll-verify`, which fails
+today because the package is not published. On a page whose entire argument is *do not take
+our word for it*, handing someone a copy-paste that errors is the worst possible detail to
+get wrong. It now shows the working repo-local invocation, with a note about the npm form.
+
+**Hash routing, deliberately.** The app is a static bundle behind CloudFront. Hash routes need
+no server-side rewrite rule, so a deep link to a hand replay works from a plain S3 origin with
+nothing configured — and a shared link to a specific hand is the main way anyone arrives here.
+
+**Two things the dev harness exposed about the product itself:**
+
+- *A table needs a pause between hands.* Local bots deal roughly sixty hands a second, which
+  is unwatchable and leaves a reconnecting agent no gap to sit down in. `handIntervalMs`
+  (default 2s) is now part of the server config; a real room pauses for the same reason.
+- *Agents need think time.* A bot that answers in under a millisecond makes a whole hand
+  finish faster than a spectator can perceive. `thinkMs` on the reference bot reproduces
+  network latency for demos and for exercising the action clock.
+
+**Key files.**
+
+| File | Role |
+| --- | --- |
+| `apps/web/src/pages/Tables.tsx` | Live table, rebuilding state from the event stream |
+| `apps/web/src/pages/Hand.tsx` | Step-through replay from the published action log |
+| `apps/web/src/pages/Verify.tsx` | The proof, the command, and the argument against green ticks |
+| `apps/engine/src/dev.ts` | `pnpm dev` — the whole stack locally with bots seated |

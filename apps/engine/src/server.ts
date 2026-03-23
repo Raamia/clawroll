@@ -44,6 +44,15 @@ export interface ServerConfig {
   readonly tickIntervalMs: number;
   /** Deal a new hand automatically whenever two or more seats can play. */
   readonly autoStartHands: boolean;
+  /**
+   * Minimum pause between hands.
+   *
+   * Without one, a table of fast agents deals a new hand the instant the last settles —
+   * local bots manage roughly sixty hands a second, which is unwatchable for a spectator
+   * and gives a reconnecting agent no gap to sit down in. A real room pauses between hands
+   * for the same reason.
+   */
+  readonly handIntervalMs: number;
 }
 
 export const DEFAULT_SERVER_CONFIG: Omit<ServerConfig, 'port' | 'table'> = {
@@ -59,6 +68,7 @@ export const DEFAULT_SERVER_CONFIG: Omit<ServerConfig, 'port' | 'table'> = {
   messagesPerSecond: 120,
   tickIntervalMs: 250,
   autoStartHands: true,
+  handIntervalMs: 2_000,
 };
 
 interface Connection {
@@ -75,6 +85,7 @@ export class ClawrollServer {
   private readonly agentSockets = new Map<string, WebSocket>();
   private ticker: NodeJS.Timeout | null = null;
   private draining = false;
+  private lastHandEndedAt = 0;
   /**
    * Events drained from the runtime but not yet durable.
    *
@@ -253,8 +264,12 @@ export class ClawrollServer {
   /** One pass: enforce deadlines, deal if idle, then get what happened into Postgres. */
   private tick(): void {
     this.table.tick();
+
     if (this.config.autoStartHands && this.table.currentPhase === 'idle') {
-      this.table.startHand();
+      const now = Date.now();
+      if (now - this.lastHandEndedAt >= this.config.handIntervalMs) {
+        if (this.table.startHand()) this.lastHandEndedAt = now;
+      }
     }
     void this.drainToLedger();
   }

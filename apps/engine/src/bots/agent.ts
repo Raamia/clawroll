@@ -132,6 +132,15 @@ export interface BotOptions {
   readonly strategy: Strategy;
   /** Times the bot will re-buy after busting. Defaults to none. */
   readonly rebuys?: number;
+  /**
+   * Artificial delay before acting, in milliseconds. Defaults to none.
+   *
+   * A local bot answers in well under a millisecond, so a whole hand finishes faster than a
+   * spectator can perceive — the table looks permanently idle even while dealing sixty hands
+   * a second. Real agents over a network take time to think; this reproduces that for demos
+   * and for testing the action clock.
+   */
+  readonly thinkMs?: number;
 }
 
 /**
@@ -241,13 +250,18 @@ export class Bot {
           holeCards: this.holeCards,
           board: message.board,
         });
-        this.send({
-          type: 'action',
-          handId: message.handId,
-          requestId: message.requestId,
-          action: decision.action,
-          ...(decision.amount !== undefined ? { amount: decision.amount } : {}),
-        });
+        const reply = () =>
+          this.send({
+            type: 'action',
+            handId: message.handId,
+            requestId: message.requestId,
+            action: decision.action,
+            ...(decision.amount !== undefined ? { amount: decision.amount } : {}),
+          });
+
+        const think = this.options.thinkMs ?? 0;
+        if (think > 0) setTimeout(reply, think).unref();
+        else reply();
         break;
       }
 

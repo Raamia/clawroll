@@ -102,7 +102,16 @@ class Auditor {
 export async function runSession(targetHands = 20): Promise<SessionResult> {
   const directory = new InMemoryAgentDirectory();
   const server = new ClawrollServer(
-    { ...DEFAULT_SERVER_CONFIG, port: 0, table: DEMO_TABLE, autoStartHands: true },
+    {
+      ...DEFAULT_SERVER_CONFIG,
+      port: 0,
+      table: DEMO_TABLE,
+      autoStartHands: true,
+      // No pause between hands. The default exists so a spectator can follow the action;
+      // this session is measuring correctness and throughput, and a two-second gap would
+      // just make the run longer without testing anything more.
+      handIntervalMs: 0,
+    },
     directory,
   );
   const port = await server.start();

@@ -16,7 +16,9 @@
     "dev:infra": "docker compose up -d",
     "dev:infra:down": "docker compose down",
     "dev:infra:reset": "docker compose down -v && docker compose up -d",
-    "demo": "tsx apps/engine/src/bots/session.ts"
+    "demo": "tsx apps/engine/src/bots/session.ts",
+    "dev": "tsx apps/engine/src/dev.ts",
+    "dev:web": "pnpm --filter @clawroll/web dev"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",

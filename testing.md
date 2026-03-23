@@ -860,6 +860,49 @@ the stored one. Without it, an upsert introduced later would silently make every
 history editable, and verification would become theatre.
 
 
+### F19 — Spectator web app
+
+**No unit tests.** This is deliberate and worth stating plainly rather than leaving as a gap.
+
+The app is presentation over an API that is already covered end to end: `archive.test.ts`
+proves a hand played by the engine is archived, served over HTTP, and verifies from the
+downloaded proof. Component tests over this layer would mostly assert that React renders the
+props it was given — restating the implementation, breaking on every refactor, and catching
+approximately nothing.
+
+**Verified by driving the real thing instead.** The full stack was run locally (`pnpm dev`:
+real engine, real Postgres, real ledger, real bots) and every page exercised in a browser:
+
+| Checked | Result |
+| --- | --- |
+| Live table during a hand | Pot accumulating to 42.80, folded seat greyed, per-seat bets shown |
+| Hole cards on the public feed | Face down for every live player, at every point |
+| Replay | 13 actions steppable; showdown hands shown, folded hands still face down |
+| Leaderboard | Ranked, with net winnings |
+| Verify page | Proof served, command displayed |
+| The displayed command | Piped a served proof into the CLI — `VERIFIED`, exit 0 |
+| Console | No errors |
+| Production build | `tsc --noEmit && vite build` clean |
+
+**Two real bugs found by looking at it, which no unit test would have caught:**
+
+*The live table never updated during a hand.* The page listened only for `table_state`, which
+the runtime broadcasts on seat changes and settlement — not mid-hand. A viewer saw an empty
+board and a zero pot while a hand played out in front of them. Every API test passed; the data
+was all being sent. Only watching it revealed the page was ignoring most of it.
+
+*The verify page displayed a command that did not work.* `npx clawroll-verify` fails today
+because the package is unpublished. On a page arguing *do not take our word for it*, a
+copy-paste that errors is the worst possible detail to get wrong. Caught by running the
+command rather than reading it.
+
+**A test that failed for a good reason.** Adding `handIntervalMs` (a 2s pause between hands,
+so spectators can follow the action) dropped the demo session below its 25-hand target. The
+default is right for a real table; the session test measures throughput and correctness, so
+it now opts out with `handIntervalMs: 0`. A shared default changing behaviour somewhere it
+should not is exactly what that assertion is for.
+
+
 ---
 
 ## Invariant catalogue
@@ -961,3 +1004,6 @@ against live data, because an invariant worth testing is worth monitoring.
 | I89 | A proof served over HTTP verifies against `clawroll-verify` | `archive.test.ts › verifies from the served proof` | F18 |
 | I90 | The public read API needs no credential | `archive.test.ts › the read API` | F18 |
 | I91 | The leaderboard is derived from published hands, not the ledger | `archive.ts › leaderboard()` | F18 |
+| I92 | The spectator UI can never display a live player's hole cards | `/spectate` stream contents, `table.test.ts › hole cards are never leaked` | F19 |
+| I93 | The verification page never renders its own pass/fail verdict | `Verify.tsx` — by construction | F19 |
+| I94 | The command shown to readers actually runs | Verified by piping a served proof into the CLI | F19 |
