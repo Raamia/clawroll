@@ -6,12 +6,17 @@
   "description": "Solana deposit scanner and withdrawal sender.",
   "main": "./src/index.ts",
   "types": "./src/index.ts",
-  "exports": { ".": "./src/index.ts" },
-  "scripts": { "typecheck": "tsc --noEmit" },
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
   "dependencies": {
     "@clawroll/db": "workspace:*",
     "@clawroll/solana": "workspace:*",
     "@solana/web3.js": "^1.98.0",
-    "postgres": "^3.4.7"
+    "postgres": "^3.4.7",
+    "@solana/spl-token": "^0.4.9"
   }
 }

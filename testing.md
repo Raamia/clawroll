@@ -903,6 +903,42 @@ it now opts out with `handIntervalMs: 0`. A shared default changing behaviour so
 should not is exactly what that assertion is for.
 
 
+### F20 — Real Solana withdrawal gateway
+
+**Suite:** `apps/wallet-worker/src/solana-gateway.test.ts` — 13 tests, 2 opt-in.
+
+| Group | What it protects |
+| --- | --- |
+| `base58 encoding` | Agreement with `@solana/web3.js` over 500 random keys; all-zero input; every leading-zero count; empty input; 64-byte signature length |
+| `input validation` | Non-positive and fractional amounts, malformed destinations — all refused before any RPC call |
+| `treasury token account` | Derived as the ATA, distinct from the wallet address |
+| `against live devnet` | Reads the chain; a fresh treasury reports zero rather than throwing; an unknown signature is `null`, not an error |
+
+**Why base58 is cross-checked rather than asserted.** It is fifteen lines of hand-written
+encoding, and it is the one place in this file where a subtle bug is genuinely dangerous: a
+mis-encoded signature means the worker asks the chain about a transaction that does not exist,
+concludes it never landed, and eventually rebuilds — **while the original is sitting in a
+block.** So the test compares against `PublicKey.toBase58()`, an independent implementation,
+over 500 random inputs.
+
+**It found the bug immediately.** The digit array was seeded with `[0]`, emitting a spurious
+leading `'1'` — 33 characters for the all-zero key instead of 32. Leading-zero handling is the
+classic base58 mistake and it only shows on rare inputs, which is exactly why the suite tests
+all-zero, 1-through-5 leading zeros, and empty separately rather than trusting the random
+sweep to stumble into them.
+
+**Why the live tests assert on `null`.** A signature the cluster has never seen must come back
+as `null`, not as an error. The withdrawal worker relies on that distinction to tell *"not
+landed"* from *"cannot tell"* — and those lead to opposite decisions. It also checks that a
+brand-new treasury with no token account reports a zero balance rather than throwing, since
+that is the path a first deployment takes.
+
+**What is not unit-tested here, on purpose.** Transaction assembly against a live validator —
+whether a transfer actually moves USDC — needs a funded treasury and a faucet, which is a
+deployment step rather than a test. The live opt-in covers everything reachable without funds;
+the rest belongs in a devnet smoke test after M6.
+
+
 ---
 
 ## Invariant catalogue
@@ -1007,3 +1043,7 @@ against live data, because an invariant worth testing is worth monitoring.
 | I92 | The spectator UI can never display a live player's hole cards | `/spectate` stream contents, `table.test.ts › hole cards are never leaked` | F19 |
 | I93 | The verification page never renders its own pass/fail verdict | `Verify.tsx` — by construction | F19 |
 | I94 | The command shown to readers actually runs | Verified by piping a served proof into the CLI | F19 |
+| I95 | A withdrawal's signature is computable before it is broadcast | `solana-gateway.test.ts › builds a signed transfer whose signature exists before it is sent` | F20 |
+| I96 | Base58 encoding matches the canonical implementation exactly | `solana-gateway.test.ts › base58 encoding` | F20 |
+| I97 | An unknown signature reads as `null`, never as an error | `solana-gateway.test.ts › against live devnet` | F20 |
+| I98 | Only `finalized` counts as landed | `solana-gateway.ts › getSignatureOutcome` | F20 |

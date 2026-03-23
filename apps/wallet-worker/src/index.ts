@@ -7,3 +7,4 @@
  */
 export * from './scanner.js';
 export * from './withdrawals.js';
+export * from './solana-gateway.js';

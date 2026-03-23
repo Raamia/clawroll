@@ -1438,3 +1438,55 @@ nothing configured — and a shared link to a specific hand is the main way anyo
 | `apps/web/src/pages/Hand.tsx` | Step-through replay from the published action log |
 | `apps/web/src/pages/Verify.tsx` | The proof, the command, and the argument against green ticks |
 | `apps/engine/src/dev.ts` | `pnpm dev` — the whole stack locally with bots seated |
+
+---
+
+### F20 — Real Solana withdrawal gateway (`apps/wallet-worker`)
+
+**What it does.** The concrete implementation behind `WithdrawalGateway`: builds, signs, and
+broadcasts USDC transfers from the treasury. F15 had the protocol and its tests; this is the
+part that actually talks to a validator.
+
+**Kept deliberately thin.** Everything with a decision in it — when to retry, when a rebuild
+is safe — lives in `withdrawals.ts`. This file is mechanics only, so that reading it is close
+to a substitute for testing it.
+
+**The signature is known before the transaction is sent, and that is not obvious.** A Solana
+transaction's signature *is* the ed25519 signature over its message, so once the treasury key
+has signed, the identifier exists locally — before a single byte reaches the network. That is
+what makes "write the signature down, then send" possible at all. **On a chain where the
+network assigned the id, the entire withdrawal protocol could not be built.**
+
+**The destination token account may not exist.** USDC lands in an Associated Token Account,
+not on a wallet address. If the recipient has never held this mint, a plain transfer fails —
+so the creation instruction is added only when the account is genuinely missing (including it
+otherwise would fail the whole transaction), and the treasury pays the rent because a
+first-time recipient may hold no SOL.
+
+**`transferChecked`, not `transfer`.** It carries the mint and decimals and the program
+verifies them. A plain transfer would happily move the wrong token if the source account were
+ever mis-derived.
+
+**`skipPreflight` and `maxRetries: 0`, both deliberate.** Preflight simulates against the
+*current* bank and can reject a transaction that would land fine — and to the caller its
+failures are indistinguishable from a network error, which would push the worker toward
+rebuilding when it must not. Retrying is likewise the worker's decision, made against
+blockhash expiry, never the RPC client's.
+
+**Anything short of `finalized` reads as "not landed".** Not an error, not success — the
+withdrawal worker depends on that distinction, and a confirmed-but-not-finalized transaction
+can still be rolled back.
+
+**A bug the cross-check caught.** The hand-written base58 encoder seeded its digit array with
+`[0]`, emitting a spurious leading `'1'`: the all-zero key encoded to 33 characters instead of
+32, and empty input to `'1'` instead of `''`. A mis-encoded signature means asking the chain
+about a transaction that does not exist, concluding it never landed, and eventually
+rebuilding — while the original sits in a block. It was found because the test compares
+against `PublicKey.toBase58()` rather than against expectations I wrote myself.
+
+**Key files.**
+
+| File | Role |
+| --- | --- |
+| `apps/wallet-worker/src/solana-gateway.ts` | `SolanaWithdrawalGateway`, `bs58()` |
+| `apps/wallet-worker/src/solana-gateway.test.ts` | Base58 cross-check, validation, opt-in live devnet |
