@@ -190,6 +190,22 @@ export const MIGRATIONS: readonly { name: string; sql: string }[] = [
       CREATE INDEX IF NOT EXISTS hands_ended_idx ON hands (ended_at DESC);
     `,
   },
+  {
+    name: '005_derivation_sequence',
+    sql: /* sql */ `
+      -- Allocates BIP-44 indices for agent deposit addresses.
+      --
+      -- Replaces MAX(derivation_index) + 1, which was wrong twice over. It is racy — two
+      -- concurrent registrations read the same maximum and one loses on the UNIQUE
+      -- constraint — and it is fragile: a single row with a large index breaks every future
+      -- registration, because BIP-44 hardened indices must fit in an int32 and MAX+1 does
+      -- not care. A sequence is atomic, monotonic, and cannot be poisoned by an unrelated row.
+      --
+      -- Starts at 1: index 0 is the treasury.
+      CREATE SEQUENCE IF NOT EXISTS agent_derivation_index_seq
+        AS BIGINT START WITH 1 INCREMENT BY 1 MINVALUE 1 MAXVALUE 2147483647 NO CYCLE;
+    `,
+  },
 ];
 
 /** Apply any migration that has not run. Safe to call repeatedly. */
@@ -218,6 +234,7 @@ export async function migrate(sql: Sql): Promise<string[]> {
 /** Drop everything. Test-only — it is deliberately explicit about being destructive. */
 export async function dropAllTablesForTests(sql: Sql): Promise<void> {
   await sql.unsafe(`
+    DROP SEQUENCE IF EXISTS agent_derivation_index_seq CASCADE;
     DROP TABLE IF EXISTS hands, table_seats, hand_settlements, withdrawals, deposit_sightings,
       ledger_entries, ledger_txs, accounts, agents, schema_migrations CASCADE;
     DROP TYPE IF EXISTS account_type, ledger_kind, withdrawal_status CASCADE;

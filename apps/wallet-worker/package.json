@@ -11,13 +11,15 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "start": "tsx ./src/main.ts"
+    "start": "tsx ./src/main.ts",
+    "register": "tsx ./src/register.ts"
   },
   "dependencies": {
     "@clawroll/db": "workspace:*",
     "@clawroll/solana": "workspace:*",
     "@solana/web3.js": "^1.98.0",
     "postgres": "^3.4.7",
-    "@solana/spl-token": "^0.4.9"
+    "@solana/spl-token": "^0.4.9",
+    "@clawroll/engine": "workspace:*"
   }
 }

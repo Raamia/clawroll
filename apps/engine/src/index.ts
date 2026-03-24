@@ -7,6 +7,7 @@
  * and is a thin adapter with no game logic at all.
  */
 export * from './archive.js';
+export * from './agent-directory.js';
 export * from './auth.js';
 export * from './bankroll.js';
 export * from './server.js';

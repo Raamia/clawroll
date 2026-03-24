@@ -7,8 +7,8 @@
  */
 
 import { Ledger, createSql, migrate } from '@clawroll/db';
+import { PostgresAgentDirectory } from './agent-directory.js';
 import { HandArchive } from './archive.js';
-import { InMemoryAgentDirectory } from './auth.js';
 import { BankrollService } from './bankroll.js';
 import { ClawrollServer, DEFAULT_SERVER_CONFIG } from './server.js';
 import type { TableConfig } from './table.js';
@@ -38,6 +38,13 @@ async function main(): Promise<void> {
   if (applied.length > 0) console.log(`[clawroll] applied migrations: ${applied.join(', ')}`);
 
   const ledger = new Ledger(sql);
+
+  // Warmed before the first connection can arrive, then refreshed so an agent registered
+  // after startup can connect without waiting for a redeploy.
+  const directory = new PostgresAgentDirectory(sql);
+  console.log(`[clawroll] loaded ${await directory.warm()} agent(s)`);
+  directory.startRefreshing();
+
   const table: TableConfig = {
     tableId: process.env['TABLE_ID'] ?? 'main',
     smallBlind: number('SMALL_BLIND_MICROS', 50_000),
@@ -57,9 +64,7 @@ async function main(): Promise<void> {
       autoStartHands: true,
       handIntervalMs: number('HAND_INTERVAL_MS', 2_000),
     },
-    // TODO(M7): a Postgres-backed directory. The interface exists precisely so this swap is
-    // a one-line change; until agent registration ships there is nothing to read.
-    new InMemoryAgentDirectory(),
+    directory,
     new BankrollService(sql, ledger),
     new HandArchive(sql),
   );

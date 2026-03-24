@@ -51,6 +51,9 @@ importers:
       '@clawroll/db':
         specifier: workspace:*
         version: link:../../packages/db
+      '@clawroll/engine':
+        specifier: workspace:*
+        version: link:../engine
       '@clawroll/solana':
         specifier: workspace:*
         version: link:../../packages/solana
