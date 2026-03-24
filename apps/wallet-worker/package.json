@@ -10,7 +10,8 @@
     ".": "./src/index.ts"
   },
   "scripts": {
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "start": "tsx ./src/main.ts"
   },
   "dependencies": {
     "@clawroll/db": "workspace:*",

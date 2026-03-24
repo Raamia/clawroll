@@ -1490,3 +1490,52 @@ against `PublicKey.toBase58()` rather than against expectations I wrote myself.
 | --- | --- |
 | `apps/wallet-worker/src/solana-gateway.ts` | `SolanaWithdrawalGateway`, `bs58()` |
 | `apps/wallet-worker/src/solana-gateway.test.ts` | Base58 cross-check, validation, opt-in live devnet |
+
+---
+
+### F21 — Container images and production entry points
+
+**What it does.** Adds `main.ts` for both services and one Dockerfile that builds either.
+
+**One Dockerfile, two services**, selected by `--build-arg SERVICE=`. The engine and the
+wallet worker share the same workspace, dependencies and most of the same code; two
+near-identical Dockerfiles would drift, and the drift would surface as a worker running
+against a different version of the ledger than the engine.
+
+**The build stage typechecks.** A type error fails the image build rather than appearing at
+runtime in production. With this repo's strict settings that is a real gate.
+
+**Configuration is required, not defaulted.** Anything that matters is read from the
+environment and throws if absent. A poker server that silently starts with the wrong stakes,
+or against the wrong database, is worse than one that refuses to boot.
+
+**The worker verifies the cluster before loading a key.** `assertDevnet` runs first —
+confirmed from inside the container against real devnet — because this is the process that
+holds the master seed and signs transfers, and being wrong about the chain here has
+consequences that cannot be undone.
+
+**Three runtime details, each fixed after observing the container rather than reasoning about
+it:**
+
+- *`tini` as PID 1.* Without it SIGTERM never reaches Node, so an ECS deployment kills the
+  process instead of shutting it down — dropping live WebSocket connections mid-hand.
+  Verified: `docker stop` exits 0 after a clean shutdown.
+- *No corepack in the runtime image.* Leaving it in meant every task launch shelled out to
+  npmjs to fetch pnpm — slow on every scale-out and a hard failure in a VPC without egress.
+  `tsx` is invoked as a plain binary; nothing at runtime needs the network to start.
+- *Non-root.* A container escape from a process that only reads a socket and talks to
+  Postgres should not begin with permission to rewrite its own image.
+
+**TypeScript runs directly via `tsx` rather than being compiled.** Every workspace package
+points `main` at `src/*.ts`, so emitting JS would mean rewriting eight manifests and threading
+a build step through all of them — more than this milestone warrants, for tens of milliseconds
+of startup and no runtime difference. The build-stage typecheck is what catches type errors;
+`tsx` only strips them.
+
+**Key files.**
+
+| File | Role |
+| --- | --- |
+| `Dockerfile` | Multi-stage build for both services |
+| `apps/engine/src/main.ts` | Production server — env config, migrations, graceful shutdown |
+| `apps/wallet-worker/src/main.ts` | Deposit scan + withdrawal loop, devnet guard first |
