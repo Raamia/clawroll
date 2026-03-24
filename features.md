@@ -1539,3 +1539,58 @@ of startup and no runtime difference. The build-stage typecheck is what catches 
 | `Dockerfile` | Multi-stage build for both services |
 | `apps/engine/src/main.ts` | Production server — env config, migrations, graceful shutdown |
 | `apps/wallet-worker/src/main.ts` | Deposit scan + withdrawal loop, devnet guard first |
+
+---
+
+### F22 — AWS CDK stack (`infra/`)
+
+**What it does.** The whole deployment: VPC, RDS, ElastiCache, two Fargate services behind an
+ALB, S3/CloudFront for the spectator app, and KMS-encrypted secrets. Ship-fast tier, roughly
+$70–120/month. Full runbook in [`infra/README.md`](./infra/README.md).
+
+**Why Fargate and not Lambda.** The table runtime holds live state, drives sub-second timers,
+and agents hold sockets open for a whole session. Lambda is the opposite of all three, and
+API Gateway WebSockets would push the runtime into DynamoDB and make every action a round
+trip — replacing a design that works with one that fights the platform.
+
+**`desiredCount: 1` and `minHealthyPercent: 0` are correctness constraints, not tuning.** The
+runtime holds the table in memory, so two engine tasks would each own a *different* copy of
+the same table — dealing two different hands under one table id. Deploys therefore stop the
+old task before starting the new one. Redis-backed ownership is designed for but not built,
+so **bumping `desiredCount` before it exists is a bug, not a scale-up.** Same for the worker:
+two scanners are harmless (the ledger refuses a signature twice) but two withdrawal workers
+would sign concurrently from one treasury.
+
+**The ALB idle timeout is an hour.** Agents hold a socket for a session and a hand can sit
+idle on the action clock; the 60-second default would cut them mid-hand.
+
+**Three bugs found by synthesizing and inspecting the template, not by reading the code:**
+
+*A recursive copy explosion.* `fromAsset('..')` bundles the repo root, which contains
+`infra/cdk.out` — so it copied its own output into itself until the path exceeded the
+filesystem limit. There was no `.dockerignore` at all, which also meant every Docker build had
+been shipping `.git` and `node_modules` into the build context.
+
+*The master seed secret was not actually empty.* CDK's L2 `Secret` emits
+`GenerateSecretString: {}` when given no value, filling it with a random 32-character string.
+Nothing leaked — but the secret then **looks populated when it is not**, and the only thing
+between that and a silent misconfiguration was the BIP-39 checksum refusing it at startup.
+Switched to `CfnSecret` so it is genuinely empty and unmistakably unconfigured. Verified in
+the synthesized template: `hasValue=false`.
+
+*`exactOptionalPropertyTypes` is incompatible with `aws-cdk-lib`.* Its interfaces declare
+`IVpc.vpnGatewayId: string` while the concrete `Vpc` holds `string | undefined`. Relaxed for
+`infra` only — the setting stays on everywhere we control the types, where it has already
+caught a `-1` sentinel leaking into `Rank` and prop-forwarding in the web app.
+
+**The template was inspected, not assumed.** RDS encrypted with deletion protection and not
+publicly accessible; both services single-task with circuit breakers; ALB idle timeout 3600s;
+health check on `/healthz` with a 60s deregistration delay; S3 public access blocked.
+
+**Key files.**
+
+| File | Role |
+| --- | --- |
+| `infra/lib/clawroll-stack.ts` | The stack |
+| `infra/README.md` | Deploy runbook, including what is deliberately not done |
+| `.dockerignore` | Keeps the build context sane and stops the recursive copy |

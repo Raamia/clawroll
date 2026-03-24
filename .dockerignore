@@ -1,0 +1,39 @@
+# Build context for both the Dockerfile and CDK's `fromAsset`.
+#
+# Without this, `fromAsset('..')` bundles the repo root — which contains `infra/cdk.out` —
+# and copies the output directory into itself, recursively, until the path exceeds the
+# filesystem limit. It also keeps the Docker context small: the .git directory and
+# node_modules together dwarf the source.
+
+node_modules
+**/node_modules
+.git
+.gitignore
+
+# CDK output — the recursive-copy culprit.
+infra/cdk.out
+**/cdk.out
+.cdk.staging
+
+# Build output and local artefacts
+dist
+**/dist
+coverage
+**/coverage
+*.tsbuildinfo
+pgdata
+*.log
+
+# Never in an image
+.env
+.env.*
+*.pem
+*.key
+keypair*.json
+wallet*.json
+
+# Not needed at runtime; the image installs from the lockfile and typechecks its own source
+.vscode
+.idea
+.DS_Store
+**/*.test.ts

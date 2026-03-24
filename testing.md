@@ -939,6 +939,45 @@ deployment step rather than a test. The live opt-in covers everything reachable 
 the rest belongs in a devnet smoke test after M6.
 
 
+### F21–F22 — Containers and infrastructure
+
+**No unit tests, deliberately.** A CDK stack is a declaration; asserting that
+`instanceType` equals what was written two lines above restates the source and breaks on every
+refactor without catching anything. What matters is whether it *synthesizes* and whether the
+resulting template says what was intended.
+
+**Verified by building and running, and by inspecting the synthesized template.**
+
+| Checked | Result |
+| --- | --- |
+| Both images build | Typecheck runs inside the build stage and gates it |
+| Engine container serves | `/healthz` and `/api/tables` against host Postgres |
+| Graceful shutdown | `docker stop` → SIGTERM logged → exit 0 |
+| Non-root | `uid=100(clawroll)` |
+| Worker startup order | Cluster verified as devnet **before** failing on the missing mnemonic |
+| `cdk synth` | Clean, no warnings |
+| Template contents | RDS encrypted, deletion-protected, not public; both services single-task with circuit breakers; ALB idle 3600s; `/healthz`; S3 public access blocked |
+| Master seed secret | `hasValue=false` — genuinely empty |
+
+**Three bugs this found, none of which a unit test would have:**
+
+*A recursive copy explosion* — `fromAsset('..')` bundled `infra/cdk.out` into itself until the
+path exceeded the filesystem limit. There was no `.dockerignore`, so every earlier Docker
+build had also been shipping `.git` and `node_modules` into the context.
+
+*The master seed secret was not empty.* CDK's L2 `Secret` fills an unspecified secret with a
+random 32-character string. The template inspection caught it; reading the code would not
+have, because the code says exactly what I intended and the construct did something else.
+
+*Corepack downloading pnpm at container start* — a network call on every task launch, and a
+hard failure in a VPC without egress. Found by reading the container's own logs.
+
+**What is not verified, and cannot be from here.** Whether the stack actually deploys: that
+needs AWS credentials and a bootstrapped account. `cdk synth` proves the template is valid
+CloudFormation, not that CloudFormation will accept every resource in a real account. The
+first `cdk deploy` is still a real test.
+
+
 ---
 
 ## Invariant catalogue
@@ -1047,3 +1086,7 @@ against live data, because an invariant worth testing is worth monitoring.
 | I96 | Base58 encoding matches the canonical implementation exactly | `solana-gateway.test.ts › base58 encoding` | F20 |
 | I97 | An unknown signature reads as `null`, never as an error | `solana-gateway.test.ts › against live devnet` | F20 |
 | I98 | Only `finalized` counts as landed | `solana-gateway.ts › getSignatureOutcome` | F20 |
+| I99 | The container shuts down gracefully on SIGTERM | `docker stop` → exit 0, verified | F21 |
+| I100 | Services never run more than one task | `minHealthyPercent: 0`, `desiredCount: 1`, verified in the template | F22 |
+| I101 | The master seed secret is created with no value | Template inspection — `hasValue=false` | F22 |
+| I102 | The database is encrypted, deletion-protected and not publicly accessible | Template inspection | F22 |

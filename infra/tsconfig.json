@@ -1,0 +1,23 @@
+{
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "noEmit": true,
+    "types": ["node"],
+
+    // Relaxed for this package only.
+    //
+    // `aws-cdk-lib` is not written against `exactOptionalPropertyTypes`: its interfaces
+    // declare properties like `IVpc.vpnGatewayId: string` while the concrete `Vpc` holds
+    // `string | undefined`. Every construct we pass around trips it, and none of it is
+    // fixable from here — it is noise about a third-party library's declarations, not about
+    // our code.
+    //
+    // Scoped to `infra` deliberately: the setting stays on everywhere we control the types,
+    // which is where it earns its keep (it caught the `-1`-vs-`null` sentinel in the
+    // evaluator and the prop-forwarding in the web app).
+    "exactOptionalPropertyTypes": false
+  },
+  "include": ["bin/**/*.ts", "lib/**/*.ts"]
+}

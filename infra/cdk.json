@@ -1,0 +1,10 @@
+{
+  "app": "npx tsx bin/clawroll.ts",
+  "watch": { "include": ["**"], "exclude": ["README.md", "cdk*.json", "node_modules"] },
+  "context": {
+    "@aws-cdk/aws-lambda:recognizeLayerVersion": true,
+    "@aws-cdk/core:checkSecretUsage": true,
+    "@aws-cdk/aws-ecs:disableExplicitDeploymentControllerForCircuitBreaker": true,
+    "@aws-cdk/core:target-partitions": ["aws"]
+  }
+}
