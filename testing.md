@@ -814,11 +814,23 @@ with a real message when the condition genuinely never holds.
 `DELETE … WHERE applied_ledger_tx_id IS NULL` — **deleting each other's rows** mid-assertion.
 Both are now scoped to a per-run table id.
 
-**A known residual flake.** Across nine full-suite runs during development, one produced a
-`waitUntil` timeout that could not be reproduced in the following five. Five suites contend
-for one Postgres instance across parallel workers, so the polling budget is now deliberately
-generous (45s). Recorded rather than declared fixed: if it recurs, the real answer is
-per-worker schemas or serialising the database suites, not a larger number.
+**A residual flake, and how it was actually fixed.** During development one full-suite run in
+nine produced a `waitUntil` timeout that could not be reproduced in the following five. The
+first mitigation was a longer polling budget, recorded at the time as *"if it recurs, the real
+answer is serialising the database suites, not a larger number."*
+
+It recurred — adding the SDK suite pushed contention back over the line, because the problem
+was never the timeout. Eight suites share one local Postgres, and run in parallel they starve
+each other's drain loops; the symptom is an integration test timing out, which looks exactly
+like a logic bug and is not.
+
+`vitest.workspace.ts` now splits the suite into two projects: **pure** (fully parallel — the
+shuffle statistics and the evaluator's brute-force cross-check, which is where nearly all the
+wall-clock lives) and **database** (`fileParallelism: false`, one file at a time). Three
+consecutive clean full-suite runs since.
+
+A test asserts the split is exhaustive, because a file matching neither project's globs would
+silently stop running — a worse failure than a flake, since nothing would report it.
 
 
 ### F18 — Hand archive and read API

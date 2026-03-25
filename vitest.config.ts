@@ -1,10 +1,15 @@
 import { defineConfig } from 'vitest/config';
 
+/**
+ * Root config.
+ *
+ * Test selection lives in `vitest.workspace.ts`, which splits the suite into a parallel
+ * "pure" project and a serialised "database" project — see the reasoning there.
+ */
 export default defineConfig({
   test: {
-    include: ['{apps,packages}/*/src/**/*.test.ts'],
-    // Game-logic suites are pure and deterministic, so they parallelise freely.
-    // Suites that touch Postgres opt out per-file with `describe.sequential`.
-    pool: 'threads',
+    // Integration suites start real servers and wait on real drains.
+    testTimeout: 60_000,
+    hookTimeout: 60_000,
   },
 });
