@@ -66,6 +66,50 @@ export interface ShowdownResult {
   readonly seats: readonly SeatState[];
   /** Best hand per seat that reached showdown; empty when everyone folded. */
   readonly hands: ReadonlyMap<number, HandValue>;
+  /** Taken by the house before any award. Zero when no rake policy applies. */
+  readonly rakeMicros: Chips;
+}
+
+/**
+ * House rake.
+ *
+ * Three rules, all of them standard, and each there for a reason worth keeping:
+ *
+ * - **A percentage of the pot**, so the house's take scales with the game rather than
+ *   punishing small pots.
+ * - **A cap**, expressed in big blinds. Without one, a single large all-in pot takes an
+ *   absurd amount and the game stops being worth playing.
+ * - **No flop, no drop.** A hand that ends before the flop is unraked. Otherwise a table of
+ *   tight agents raking every walk bleeds the whole table dry without a hand ever being
+ *   played, which is the classic way an online room quietly kills its own economy.
+ */
+export interface RakePolicy {
+  /** Fraction of the pot, e.g. `0.05` for 5%. */
+  readonly percentage: number;
+  /** Hard ceiling in micro-USDC, regardless of pot size. */
+  readonly capMicros: Chips;
+  /** Skip the rake when the hand ended before a flop was dealt. */
+  readonly noFlopNoDrop: boolean;
+}
+
+/** 5% capped at 3 big blinds, unraked before the flop. */
+export function standardRake(bigBlind: Chips): RakePolicy {
+  return { percentage: 0.05, capMicros: bigBlind * 3, noFlopNoDrop: true };
+}
+
+/**
+ * How much the house takes from a finished hand.
+ *
+ * Rounded down, always. Rounding up would let the house take a micro-USDC more than the
+ * policy allows, and a rake that exceeds its own cap is the kind of thing players notice
+ * and never forgive.
+ */
+export function rakeFor(state: HandState, policy: RakePolicy | undefined): Chips {
+  if (!policy) return 0;
+  if (policy.noFlopNoDrop && state.board.length === 0) return 0;
+
+  const pot = state.seats.reduce((sum, s) => sum + s.committedTotal, 0);
+  return Math.min(Math.floor(pot * policy.percentage), policy.capMicros);
 }
 
 /**
@@ -161,12 +205,27 @@ function splitPot(
  * A pot with a single eligible seat is returned uncontested. That covers the
  * uncalled portion of a bet, which is refunded rather than won.
  */
-export function settleHand(state: HandState): ShowdownResult {
+export function settleHand(state: HandState, rake?: RakePolicy): ShowdownResult {
   if (state.street !== 'showdown' && state.street !== 'complete') {
     throw new Error(`Hand ${state.handId} is not finished (street ${state.street})`);
   }
 
+  const rakeMicros = rakeFor(state, rake);
+
+  // Taken off the main pot first, then the side pots in order.
+  //
+  // Not proportionally across every pot, which sounds fairer and is not: proportional
+  // splitting produces a remainder that has to be assigned somewhere anyway, and it can take
+  // chips from a side pot the raked players were never eligible for. Draining in order keeps
+  // the rake where the money actually accumulated.
   const pots = derivePots(state.seats);
+  let remainingRake = rakeMicros;
+  const rakedPots: Pot[] = pots.map((pot) => {
+    if (remainingRake === 0) return pot;
+    const taken = Math.min(remainingRake, pot.amount);
+    remainingRake -= taken;
+    return { amount: pot.amount - taken, eligibleSeats: pot.eligibleSeats };
+  });
   const span = Math.max(...state.seats.map((s) => s.seat)) + 1;
   const live = liveSeats(state);
 
@@ -185,7 +244,9 @@ export function settleHand(state: HandState): ShowdownResult {
   const awards: PotAward[] = [];
   const credited = new Map<number, Chips>();
 
-  for (const [potIndex, pot] of pots.entries()) {
+  for (const [potIndex, pot] of rakedPots.entries()) {
+    // A pot fully consumed by the rake awards nothing, which is legitimate.
+    if (pot.amount === 0) continue;
     // A pot nobody can win means chips would vanish. `legalActions` makes this
     // unreachable by refusing a fold that is not facing a bet, which is the only
     // way every eligible seat can leave a pot. Kept as a loud assertion rather
@@ -226,7 +287,7 @@ export function settleHand(state: HandState): ShowdownResult {
     return won > 0 ? { ...s, stack: s.stack + won } : s;
   });
 
-  return { pots, awards, seats, hands };
+  return { pots: rakedPots, awards, seats, hands, rakeMicros };
 }
 
 /** Total across all derived pots. Must always equal `totalPot(state)`. */
@@ -242,11 +303,13 @@ export function potTotal(pots: readonly Pot[]): Chips {
  */
 export function assertChipsConserved(before: HandState, result: ShowdownResult): void {
   const chipsBefore = before.seats.reduce((sum, s) => sum + s.stack, 0) + totalPot(before);
-  const chipsAfter = result.seats.reduce((sum, s) => sum + s.stack, 0);
+  // Rake leaves the table but does not vanish — it moves to the house, so it counts.
+  const chipsAfter = result.seats.reduce((sum, s) => sum + s.stack, 0) + result.rakeMicros;
   if (chipsBefore !== chipsAfter) {
     throw new Error(
       `Chip conservation violated in hand ${before.handId}: ` +
-        `${chipsBefore} before, ${chipsAfter} after settlement`,
+        `${chipsBefore} before, ${chipsAfter} after settlement ` +
+        `(including ${result.rakeMicros} rake)`,
     );
   }
 }

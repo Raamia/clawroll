@@ -44,6 +44,7 @@ import {
   legalActions,
   parseCards,
   settleHand,
+  standardRake,
   startHand,
   assertChipsConserved,
 } from '@clawroll/poker';
@@ -68,6 +69,11 @@ export interface TableConfig {
   readonly bigBlind: number;
   readonly ante?: number;
   readonly maxSeats: number;
+  /**
+   * House rake as a fraction of the pot, capped at three big blinds and skipped when the
+   * hand ends before a flop. Defaults to 0 — a table takes nothing unless configured to.
+   */
+  readonly rakePercentage?: number;
   readonly minBuyIn: number;
   readonly maxBuyIn: number;
   /** How long an agent has to act before the server acts for it. */
@@ -562,7 +568,12 @@ export class TableRuntime {
   private settle(): void {
     const hand = this.hand!;
     const state = hand.state!;
-    const result = settleHand(state);
+    // No rake unless the table is configured for one, so the default table is rake-free.
+    const rake =
+      this.config.rakePercentage && this.config.rakePercentage > 0
+        ? { ...standardRake(this.config.bigBlind), percentage: this.config.rakePercentage }
+        : undefined;
+    const result = settleHand(state, rake);
 
     // The same invariant the tests fuzz, checked on every live hand.
     assertChipsConserved(state, result);
@@ -646,7 +657,7 @@ export class TableRuntime {
         handId: hand.handId,
         tableId: this.config.tableId,
         deltas,
-        rakeMicros: 0,
+        rakeMicros: result.rakeMicros,
       });
     }
 
@@ -667,6 +678,8 @@ export class TableRuntime {
       }
     }
 
+    // Rake leaves the table for the house, exactly as a departing player's stack does.
+    this.chipsCashedOut += result.rakeMicros;
     this.assertTableChipsConserved();
 
     this.phase = 'idle';

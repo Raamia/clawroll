@@ -9,7 +9,14 @@ import {
   startHand,
   totalPot,
 } from './handState.js';
-import { assertChipsConserved, derivePots, potTotal, settleHand } from './showdown.js';
+import {
+  assertChipsConserved,
+  derivePots,
+  potTotal,
+  rakeFor,
+  settleHand,
+  standardRake,
+} from './showdown.js';
 
 const BB = 100;
 const SB = 50;
@@ -245,6 +252,97 @@ describe('three-way all-in for different amounts', () => {
     expect(result.seats[1]!.stack).toBe(600);
     expect(result.seats[2]!.stack).toBe(500);
     expect(potTotal(result.pots)).toBe(1700);
+  });
+});
+
+describe('rake', () => {
+  function finishedHand(board: string, committed = 1_000_000): HandState {
+    const base = startHand(config({ players: players(2) }));
+    return {
+      ...base,
+      street: 'showdown',
+      board: board ? parseCards(board) : [],
+      actingSeat: null,
+      pot: committed * 2,
+      seats: [
+        { ...base.seats[0]!, holeCards: parseCards('AcAd') as [Card, Card], committedTotal: committed, committedThisStreet: 0, stack: 0 },
+        { ...base.seats[1]!, holeCards: parseCards('KcKd') as [Card, Card], committedTotal: committed, committedThisStreet: 0, stack: 0 },
+      ],
+    };
+  }
+
+  it('takes nothing when no policy is configured', () => {
+    const result = settleHand(finishedHand('2h5s9cJdTh'));
+    expect(result.rakeMicros).toBe(0);
+    expect(result.seats[0]!.stack).toBe(2_000_000);
+  });
+
+  it('takes the configured percentage', () => {
+    const result = settleHand(finishedHand('2h5s9cJdTh', 100_000), {
+      percentage: 0.05,
+      capMicros: 1_000_000_000,
+      noFlopNoDrop: true,
+    });
+    // 5% of a 200,000 pot.
+    expect(result.rakeMicros).toBe(10_000);
+    expect(result.seats[0]!.stack).toBe(190_000);
+  });
+
+  it('never exceeds the cap', () => {
+    // Without a cap a single large all-in pot takes an absurd amount and the game stops
+    // being worth playing.
+    const policy = standardRake(100_000); // cap = 300,000
+    const result = settleHand(finishedHand('2h5s9cJdTh', 50_000_000), policy);
+    expect(result.rakeMicros).toBe(300_000);
+  });
+
+  it('takes nothing when the hand ended before a flop', () => {
+    // No flop, no drop. Raking every walk bleeds a table dry without a hand being played.
+    const result = settleHand(finishedHand(''), standardRake(100_000));
+    expect(result.rakeMicros).toBe(0);
+  });
+
+  it('rounds down rather than up', () => {
+    // A rake that exceeds its own stated percentage is the kind of thing players notice.
+    const state = finishedHand('2h5s9cJdTh', 33);
+    expect(rakeFor(state, { percentage: 0.05, capMicros: 1_000_000, noFlopNoDrop: true })).toBe(3);
+  });
+
+  it('conserves chips once the rake is counted', () => {
+    // The rake leaves the table but does not vanish — it moves to the house.
+    const state = finishedHand('2h5s9cJdTh', 1_000_000);
+    const result = settleHand(state, standardRake(100_000));
+    expect(result.rakeMicros).toBeGreaterThan(0);
+    expect(() => assertChipsConserved(state, result)).not.toThrow();
+
+    const paidOut = result.seats.reduce((sum, s) => sum + s.stack, 0);
+    expect(paidOut + result.rakeMicros).toBe(2_000_000);
+  });
+
+  it('drains the main pot before any side pot', () => {
+    // Not proportionally: that can take chips from a side pot the raked players were never
+    // eligible for.
+    const base = startHand(config({ players: players(3) }));
+    const state: HandState = {
+      ...base,
+      street: 'showdown',
+      board: parseCards('2h5s9cJdTh'),
+      actingSeat: null,
+      pot: 1_700_000,
+      seats: [
+        { ...base.seats[0]!, holeCards: parseCards('AcAd') as [Card, Card], committedTotal: 200_000, committedThisStreet: 0, stack: 0, status: 'allin' },
+        { ...base.seats[1]!, holeCards: parseCards('KcKd') as [Card, Card], committedTotal: 500_000, committedThisStreet: 0, stack: 0, status: 'allin' },
+        { ...base.seats[2]!, holeCards: parseCards('3c4d') as [Card, Card], committedTotal: 1_000_000, committedThisStreet: 0, stack: 0 },
+      ],
+    };
+
+    const result = settleHand(state, { percentage: 0.05, capMicros: 1_000_000, noFlopNoDrop: true });
+    expect(result.rakeMicros).toBe(85_000); // 5% of 1,700,000
+    // Main pot was 600,000; the whole rake comes out of it.
+    expect(result.pots[0]!.amount).toBe(600_000 - 85_000);
+    expect(result.pots[1]!.amount).toBe(600_000);
+    expect(potTotal(result.pots) + result.rakeMicros).toBe(1_700_000);
+    expect(() => assertChipsConserved(state, result)).not.toThrow();
   });
 });
 
