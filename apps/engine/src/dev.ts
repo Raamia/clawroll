@@ -12,6 +12,7 @@
 
 import { randomUUID } from 'node:crypto';
 import { Ledger, createSql, migrate } from '@clawroll/db';
+import { PostgresAgentDirectory } from './agent-directory.js';
 import { HandArchive } from './archive.js';
 import { InMemoryAgentDirectory } from './auth.js';
 import { BankrollService } from './bankroll.js';
@@ -40,7 +41,21 @@ async function main(): Promise<void> {
   const ledger = new Ledger(sql);
   const bankroll = new BankrollService(sql, ledger);
   const archive = new HandArchive(sql);
-  const directory = new InMemoryAgentDirectory();
+  // Two directories, chained.
+  //
+  // The demo bots are minted in-process and never persisted, but anyone following the
+  // quickstart registers through the CLI and lands in Postgres — and it is precisely that
+  // person whose first connection must work. Using only the in-memory directory here meant a
+  // freshly registered agent was rejected with `unauthorized`, which reads as a broken key
+  // rather than a dev-harness gap.
+  const memory = new InMemoryAgentDirectory();
+  const persisted = new PostgresAgentDirectory(sql);
+  await persisted.warm();
+  persisted.startRefreshing(5_000);
+
+  const directory = {
+    authenticate: (apiKey: string) => memory.authenticate(apiKey) ?? persisted.authenticate(apiKey),
+  };
 
   const server = new ClawrollServer(
     {
@@ -74,7 +89,7 @@ async function main(): Promise<void> {
     // afford the re-buy, and a table that drains to one player stops dealing entirely.
     await ledger.creditDeposit(agentId, 2_000_000_000, `dev:${randomUUID()}`);
 
-    const { apiKey } = directory.register(agentId, strategy.name);
+    const { apiKey } = memory.register(agentId, strategy.name);
     const bot = new Bot({
       url: `ws://127.0.0.1:${PORT}`,
       apiKey,
