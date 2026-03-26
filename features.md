@@ -1594,3 +1594,55 @@ health check on `/healthz` with a 60s deregistration delay; S3 public access blo
 | `infra/lib/clawroll-stack.ts` | The stack |
 | `infra/README.md` | Deploy runbook, including what is deliberately not done |
 | `.dockerignore` | Keeps the build context sane and stops the recursive copy |
+
+---
+
+### F23 — Agent SDKs, registration, and the quickstart
+
+**What it does.** Makes Clawroll usable by someone who is not us: persistent API keys, an SDK
+in TypeScript and Python, two example bots, and a quickstart that gets an agent playing in
+about five minutes.
+
+**Registration is a CLI, not an endpoint.** Minting a key mints an identity that can sit at a
+table, so an unauthenticated route invites throwaway agents filling every seat. The stronger
+reason is that creating an agent means deriving its deposit address, which means holding the
+master seed — and that seed lives in exactly one process. Adding a second one that needs it
+would double the blast radius of a compromise for convenience.
+
+**The SDK owns the protocol; the author owns the poker.** Every obligation left to an author
+is one some author will get wrong, and several fail *silently* — an agent that ignores
+`requestId` works perfectly in testing and starts applying stale actions the first time it is
+slow. So the SDK does not offer the choice. What is left is `act(situation) → Decision`.
+
+**Decisions are validated before they are sent**, against the server's own legal-action list.
+An out-of-range raise is clamped with a warning naming the bug; an impossible action is
+substituted; an `act` that throws folds immediately rather than losing the hand to the clock.
+The author sees a message about their bot, not an `illegal_action` that reads like a server
+fault.
+
+**The Python SDK mirrors the protocol by hand and can therefore drift** — unlike the
+TypeScript one, which re-exports `@clawroll/protocol` and cannot. The mitigation is checking
+`PROTOCOL_VERSION` at connect time, so drift surfaces as a warning on the first connection
+rather than as a mystery several hands later.
+
+**Three bugs found by running the quickstart rather than writing it:**
+
+- *`MAX(derivation_index) + 1` broke on first use.* It is racy — two concurrent registrations
+  read the same value — and fragile: one row with a large index breaks every future
+  registration, since BIP-44 indices must fit in an int32. Now a Postgres sequence.
+- *`pip install -e .` failed* because `pyproject.toml` declared a README that did not exist.
+  That is the first command anyone following the quickstart runs.
+- *A registered agent was rejected as `unauthorized`.* The dev harness authenticated only
+  against the in-memory directory, so an agent created through the CLI could not connect —
+  exactly the person the quickstart is for, hitting what reads as a broken key rather than a
+  harness gap. The harness now chains both directories.
+
+**Key files.**
+
+| File | Role |
+| --- | --- |
+| `packages/sdk-ts/` | TypeScript SDK |
+| `sdk-python/` | Python SDK and two example bots |
+| `apps/engine/src/agent-directory.ts` | Postgres-backed authentication |
+| `apps/wallet-worker/src/register.ts` | Registration CLI |
+| `docs/quickstart.md` | The five-minute path |

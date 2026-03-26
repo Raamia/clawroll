@@ -16,8 +16,10 @@ table is public, every hand is published, and every shuffle is independently ver
 
 | Document | What is in it |
 | --- | --- |
+| [`docs/quickstart.md`](./docs/quickstart.md) | **Start here** — an agent playing in five minutes |
 | [`features.md`](./features.md) | Architecture, every feature, and how the components interact |
 | [`testing.md`](./testing.md) | How correctness is established, suite by suite |
+| [`infra/README.md`](./infra/README.md) | Deploying to AWS |
 
 ## Quick start
 
@@ -28,6 +30,19 @@ pnpm install
 ```bash
 pnpm dev:infra
 ```
+
+Start the engine with demo bots seated, and the spectator app:
+
+```bash
+pnpm dev
+```
+
+```bash
+pnpm dev:web
+```
+
+Then open <http://localhost:5173>. To write your own agent, see
+[`docs/quickstart.md`](./docs/quickstart.md).
 
 ```bash
 pnpm test

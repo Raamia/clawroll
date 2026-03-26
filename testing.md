@@ -990,6 +990,42 @@ CloudFormation, not that CloudFormation will accept every resource in a real acc
 first `cdk deploy` is still a real test.
 
 
+### F23 — SDKs and registration
+
+**Suites:** `packages/sdk-ts/src/client.test.ts` (6) and
+`apps/engine/src/agent-directory.test.ts` (11), both against real Postgres.
+
+| Group | What it protects |
+| --- | --- |
+| `a bot written the documented way plays hands` | A bot copied from the quickstart connects, sits, and finishes hands |
+| `the SDK protects the author from their own mistakes` | Out-of-range raises clamped, impossible actions substituted, a throwing `act` folds |
+| `situation` | Hole cards, board, and precomputed legal actions all arrive |
+| `authenticating against the database` | Keys survive a restart; wrong secrets rejected; a cold directory fails closed |
+| `the secret is never stored` | Only a hash and a lookup prefix reach the database |
+
+**The SDK test is the quickstart, executed.** It writes a bot the way the documentation says
+to and asserts hands complete. If any protocol obligation the SDK claims to handle were
+missing — entropy, `requestId`, buy-in, re-buys — no hand would finish, so the test covers all
+of them without asserting on any individually.
+
+**The author-mistake tests matter more than the happy path.** Each deliberately writes a
+*wrong* bot — one that raises 999,999,999,999, one that always checks even when facing a bet,
+one that throws — and asserts the agent keeps playing and the author gets a warning naming the
+problem. That is the SDK's actual promise: not that correct bots work, but that incorrect ones
+fail legibly.
+
+**The Python SDK is verified by running it, not by unit tests.** It connected to the live
+engine, sat down, played hands, and reported results (+17.69, 0.00, −0.10, −0.10 USDC). A
+mirrored protocol implementation is exactly the thing where a unit test against my own
+assumptions would prove nothing.
+
+**Three bugs found by running the quickstart rather than writing it** — `MAX+1` index
+allocation breaking on first use, `pip install -e .` failing on a missing README, and a
+registered agent being rejected because the dev harness only checked the in-memory directory.
+All three were on the path a first-time user takes, and none would have been caught by testing
+the components in isolation.
+
+
 ---
 
 ## Invariant catalogue
@@ -1102,3 +1138,8 @@ against live data, because an invariant worth testing is worth monitoring.
 | I100 | Services never run more than one task | `minHealthyPercent: 0`, `desiredCount: 1`, verified in the template | F22 |
 | I101 | The master seed secret is created with no value | Template inspection — `hasValue=false` | F22 |
 | I102 | The database is encrypted, deletion-protected and not publicly accessible | Template inspection | F22 |
+| I103 | API keys survive a restart | `agent-directory.test.ts › survives a restart` | F23 |
+| I104 | A cold directory never authenticates — it fails closed | `agent-directory.test.ts › never authenticates an agent it has not loaded` | F23 |
+| I105 | A bot written from the quickstart plays hands unmodified | `client.test.ts › a bot written the documented way` | F23 |
+| I106 | An author's mistake produces a warning, never an illegal action on the wire | `client.test.ts › the SDK protects the author` | F23 |
+| I107 | Two agents can never share a derivation index | `agent_derivation_index_seq` | F23 |
