@@ -814,23 +814,30 @@ with a real message when the condition genuinely never holds.
 `DELETE … WHERE applied_ledger_tx_id IS NULL` — **deleting each other's rows** mid-assertion.
 Both are now scoped to a per-run table id.
 
-**A residual flake, and how it was actually fixed.** During development one full-suite run in
-nine produced a `waitUntil` timeout that could not be reproduced in the following five. The
-first mitigation was a longer polling budget, recorded at the time as *"if it recurs, the real
-answer is serialising the database suites, not a larger number."*
+**A residual flake, and what it actually turned out to be.** Worth recording in full, because
+the first two diagnoses were both wrong.
 
-It recurred — adding the SDK suite pushed contention back over the line, because the problem
-was never the timeout. Eight suites share one local Postgres, and run in parallel they starve
-each other's drain loops; the symptom is an integration test timing out, which looks exactly
-like a logic bug and is not.
+One full-suite run in nine produced a timeout. The first response was a longer polling budget.
+When it recurred, the second was to split the suite into a parallel **pure** project and a
+serialised **database** project (`vitest.workspace.ts`) on the theory that eight suites sharing
+one Postgres were starving each other. Three clean runs followed and it looked fixed.
 
-`vitest.workspace.ts` now splits the suite into two projects: **pure** (fully parallel — the
-shuffle statistics and the evaluator's brute-force cross-check, which is where nearly all the
-wall-clock lives) and **database** (`fileParallelism: false`, one file at a time). Three
-consecutive clean full-suite runs since.
+It was not. Running the suite eight more times surfaced a *different* failure — and the real
+one: `bankroll.test.ts` played a single hand and asserted it produced exactly one settlement
+event. **A chopped pot where every player committed the same amount leaves every net at zero,
+so the runtime correctly emits no settlement at all.** Two check-downs tying happens roughly
+one hand in four heads-up. The test was wrong, the code was right, and both earlier fixes were
+treating a symptom that had nothing to do with the cause.
 
-A test asserts the split is exhaustive, because a file matching neither project's globs would
-silently stop running — a worse failure than a flake, since nothing would report it.
+The test now plays until a hand actually moves chips, which tests the wiring without depending
+on the outcome of a particular deal. Eight consecutive clean runs since.
+
+Two lessons, and the second is the expensive one. *A test that assumes a specific game outcome
+is a test with a hidden failure rate* — here, 25%. And *an intermittent failure attributed to
+infrastructure deserves the same scepticism as any other diagnosis*: "it's a race" and "it's
+contention" are satisfying explanations precisely because they are unfalsifiable without
+actually reading the failure. The workspace split was still worth keeping — serialised database
+suites are correct regardless — but it was not the fix.
 
 
 ### F18 — Hand archive and read API

@@ -3,7 +3,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { Ledger, type Sql, createSql, migrate } from '@clawroll/db';
 import { BankrollError, BankrollService } from './bankroll.js';
 import type { ServerMessage } from '@clawroll/protocol';
-import { type TableConfig, type TableIO, TableRuntime } from './table.js';
+import { type LedgerEvent, type TableConfig, type TableIO, TableRuntime } from './table.js';
 
 let sql: Sql;
 let ledger: Ledger;
@@ -281,32 +281,48 @@ describe('a real hand settles through to Postgres', () => {
 
     const holdingsBefore = (await Promise.all(agents.map(totalHoldings))).reduce((a, b) => a + b, 0);
 
-    table.startHand();
-    const handId = table.currentHandId!;
-    for (const agentId of agents) table.submitSeed(agentId, handId, 'a'.repeat(64));
-    expect(table.currentPhase).toBe('betting');
+    // Play several hands rather than one.
+    //
+    // A chopped pot where every player committed the same amount leaves every net at zero,
+    // so the runtime correctly emits *no* settlement — a ledger transaction that moves
+    // nothing is pointless, and `recordSettlement` skips it anyway. Asserting that one hand
+    // always produces one settlement was therefore wrong, and failed roughly one run in
+    // four when two check-downs happened to tie.
+    //
+    // Playing until a hand actually moves chips tests the wiring without depending on the
+    // outcome of any particular deal.
+    const settlements: Extract<LedgerEvent, { type: 'hand_settled' }>[] = [];
+    let handsPlayed = 0;
 
-    // Answer each outstanding request with the first legal passive option, which plays the
-    // hand down to showdown.
-    let guard = 0;
-    while (table.currentPhase === 'betting') {
-      const pending = requests.pop();
-      if (!pending || pending.message.type !== 'action_request') break;
-      const { legal } = pending.message;
-      table.submitAction(pending.agentId, {
-        handId: pending.message.handId,
-        requestId: pending.message.requestId,
-        action: legal.canCheck ? 'check' : 'call',
-      });
-      if (++guard > 200) throw new Error('hand did not finish');
+    while (settlements.length === 0 && handsPlayed < 12) {
+      expect(table.startHand()).toBe(true);
+      const handId = table.currentHandId!;
+      for (const agentId of agents) table.submitSeed(agentId, handId, 'a'.repeat(64));
+      handsPlayed++;
+
+      let guard = 0;
+      while (table.currentPhase === 'betting') {
+        const pending = requests.pop();
+        if (!pending || pending.message.type !== 'action_request') break;
+        const { legal } = pending.message;
+        table.submitAction(pending.agentId, {
+          handId: pending.message.handId,
+          requestId: pending.message.requestId,
+          action: legal.canCheck ? 'check' : 'call',
+        });
+        if (++guard > 200) throw new Error('hand did not finish');
+      }
+      expect(table.currentPhase).toBe('idle');
+
+      for (const event of table.drainLedgerEvents()) {
+        if (event.type === 'hand_settled') settlements.push(event);
+      }
     }
-    expect(table.currentPhase).toBe('idle');
 
-    const settled = table.drainLedgerEvents().filter((e) => e.type === 'hand_settled');
-    expect(settled).toHaveLength(1);
+    // Twelve check-downs all chopping is not credible; if this fires, something is wrong.
+    expect(settlements.length).toBeGreaterThan(0);
 
-    for (const event of settled) {
-      if (event.type !== 'hand_settled') continue;
+    for (const event of settlements) {
       // A hand only redistributes chips between seats, so the deltas must net to zero.
       // This is what keeps the ledger's global total untouched by play.
       expect(event.deltas.reduce((sum, d) => sum + d.amountMicros, 0)).toBe(0);
@@ -315,6 +331,7 @@ describe('a real hand settles through to Postgres', () => {
     }
 
     await bankroll.applyPendingSettlements();
+    const handId = settlements[0]!.handId;
 
     // Asserted per-hand rather than as a global failure count: the outbox is shared, so a
     // count would couple this test to whatever else happens to be pending.
