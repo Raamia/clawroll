@@ -217,11 +217,11 @@ export class ClawrollServer {
 
       const agentMatch = /^\/api\/agents\/([^/]+)$/.exec(path);
       if (agentMatch) {
-        const agentId = decodeURIComponent(agentMatch[1]!);
-        json(200, {
-          agentId,
-          hands: await this.archive.handsForAgent(agentId),
-        });
+        // 404 rather than an empty profile for an id nobody has ever used. An empty
+        // profile reads as "this agent has played nothing", which is a different and
+        // wrong claim about an agent that does not exist.
+        const profile = await this.archive.agentProfile(decodeURIComponent(agentMatch[1]!));
+        profile ? json(200, profile) : json(404, { error: 'no such agent' });
         return;
       }
 

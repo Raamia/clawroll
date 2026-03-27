@@ -35,6 +35,44 @@ export interface LeaderboardRow {
   readonly netMicros: number;
 }
 
+export interface AgentProfile {
+  readonly agentId: string;
+  readonly displayName: string;
+  readonly handsPlayed: number;
+  readonly netMicros: number;
+  /** Largest total pot in any hand this agent sat in — won or not. */
+  readonly biggestPotMicros: number;
+  readonly hands: readonly HandSummary[];
+}
+
+/**
+ * Build a summary from a row of the summary columns.
+ *
+ * Shared by every list endpoint so they cannot drift. `potTotal` is the sum of the awards
+ * rather than of the contributions, which is the same number after the rake has been taken —
+ * and the awarded figure is the one a reader can check against the hand record.
+ */
+function toSummary(row: Record<string, unknown>): HandSummary {
+  const seats = row['seats'] as HandRecord['seats'];
+  const awards = row['awards'] as HandRecord['awards'];
+  const bySeat = new Map(seats.map((s) => [s.seat, s.agentId]));
+
+  const totals = new Map<string, number>();
+  for (const award of awards) {
+    const agentId = bySeat.get(award.seat);
+    if (agentId) totals.set(agentId, (totals.get(agentId) ?? 0) + award.amount);
+  }
+
+  return {
+    handId: row['id'] as string,
+    tableId: row['table_id'] as string,
+    board: row['board'] as string,
+    potTotal: awards.reduce((sum, a) => sum + a.amount, 0),
+    winners: [...totals.entries()].map(([agentId, amount]) => ({ agentId, amount })),
+    endedAt: (row['ended_at'] as Date).toISOString(),
+  };
+}
+
 export class HandArchive {
   constructor(private readonly sql: Sql) {}
 
@@ -117,26 +155,7 @@ export class HandArchive {
           SELECT id, table_id, board, seats, awards, ended_at FROM hands
           ORDER BY ended_at DESC LIMIT ${limit}`;
 
-    return rows.map((row) => {
-      const seats = row['seats'] as HandRecord['seats'];
-      const awards = row['awards'] as HandRecord['awards'];
-      const bySeat = new Map(seats.map((s) => [s.seat, s.agentId]));
-
-      const totals = new Map<string, number>();
-      for (const award of awards) {
-        const agentId = bySeat.get(award.seat);
-        if (agentId) totals.set(agentId, (totals.get(agentId) ?? 0) + award.amount);
-      }
-
-      return {
-        handId: row['id'] as string,
-        tableId: row['table_id'] as string,
-        board: row['board'] as string,
-        potTotal: awards.reduce((sum, a) => sum + a.amount, 0),
-        winners: [...totals.entries()].map(([agentId, amount]) => ({ agentId, amount })),
-        endedAt: (row['ended_at'] as Date).toISOString(),
-      };
-    });
+    return rows.map((row) => toSummary(row));
   }
 
   /**
@@ -175,16 +194,70 @@ export class HandArchive {
     }));
   }
 
-  /** Hands an agent took part in, newest first. */
+  /**
+   * Hands an agent took part in, newest first.
+   *
+   * Selects the summary columns in the same query that finds the hands. An earlier version
+   * fetched the ids here and then built summaries by filtering the newest 500 hands
+   * globally, which quietly returned nothing at all for any agent whose hands had scrolled
+   * past that window — the profile of a prolific early agent would read as if it had never
+   * played. The containment operator does the work; there is no reason for a second pass.
+   */
   async handsForAgent(agentId: string, limit = 50): Promise<HandSummary[]> {
-    const rows = await this.sql<{ id: string }[]>`
-      SELECT id FROM hands
+    const rows = await this.sql<Record<string, unknown>[]>`
+      SELECT id, table_id, board, seats, awards, ended_at FROM hands
       WHERE seats @> ${this.sql.json([{ agentId }] as unknown as never)}
       ORDER BY ended_at DESC LIMIT ${limit}`;
 
-    const summaries = await this.recent(500);
-    const wanted = new Set(rows.map((r) => r.id));
-    return summaries.filter((s) => wanted.has(s.handId));
+    return rows.map((row) => toSummary(row));
+  }
+
+  /**
+   * One agent's public record: who it is, how it has done, and its recent hands.
+   *
+   * The totals are computed over *every* hand the agent has played, not just the page of
+   * recent ones returned alongside them. A profile that silently summarised only the last
+   * fifty hands would disagree with the leaderboard, and of the two the leaderboard is the
+   * one people would believe — so the aggregate is its own query, using the same
+   * `finalStack - startingStack` definition the leaderboard uses.
+   *
+   * Returns `null` only when the agent has no published hands and no directory entry, which
+   * is the honest answer to "who is this?" for an id nobody has ever used.
+   */
+  async agentProfile(agentId: string, limit = 50): Promise<AgentProfile | null> {
+    const [totals, named, hands] = await Promise.all([
+      this.sql<{ hands_played: string; net: string; biggest_pot: string }[]>`
+        WITH mine AS (
+          SELECT seats, awards FROM hands
+          WHERE seats @> ${this.sql.json([{ agentId }] as unknown as never)}
+        )
+        SELECT count(*)::text AS hands_played,
+               coalesce(sum(
+                 (SELECT sum((s->>'finalStack')::bigint - (s->>'startingStack')::bigint)
+                  FROM jsonb_array_elements(seats) s WHERE s->>'agentId' = ${agentId})
+               ), 0)::text AS net,
+               coalesce(max(
+                 (SELECT sum((a->>'amount')::bigint) FROM jsonb_array_elements(awards) a)
+               ), 0)::text AS biggest_pot
+        FROM mine`,
+      this.sql<{ display_name: string | null }[]>`
+        SELECT display_name FROM agents WHERE id = ${agentId}`,
+      this.handsForAgent(agentId, limit),
+    ]);
+
+    const row = totals[0];
+    const handsPlayed = Number(row?.hands_played ?? 0);
+    const displayName = named[0]?.display_name ?? null;
+    if (handsPlayed === 0 && displayName === null) return null;
+
+    return {
+      agentId,
+      displayName: displayName ?? agentId,
+      handsPlayed,
+      netMicros: Number(row?.net ?? 0),
+      biggestPotMicros: Number(row?.biggest_pot ?? 0),
+      hands,
+    };
   }
 
   async count(): Promise<number> {

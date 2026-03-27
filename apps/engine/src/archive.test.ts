@@ -181,6 +181,64 @@ describe('listings', () => {
   });
 });
 
+describe('agent profiles', () => {
+  it('summarises an agent over every hand it has played', async () => {
+    const profile = await archive.agentProfile(ALICE);
+
+    expect(profile).not.toBeNull();
+    expect(profile?.agentId).toBe(ALICE);
+    expect(profile?.handsPlayed).toBeGreaterThanOrEqual(2);
+    // Alice finishes each fixture up a million; Bob finishes down one.
+    expect(profile?.netMicros).toBeGreaterThan(0);
+    expect(profile?.biggestPotMicros).toBe(2_000_000);
+
+    const bob = await archive.agentProfile(BOB);
+    expect(bob?.netMicros).toBeLessThan(0);
+  });
+
+  it('agrees with the leaderboard on hands played and net', async () => {
+    // Two independent queries over the same JSONB. If they ever disagree, the profile is
+    // the one people would doubt and the leaderboard the one they would believe — so the
+    // disagreement has to fail here rather than in front of a reader.
+    //
+    // The leaderboard is scoped to this table while the profile is not, which is only sound
+    // because these fixture agents have unique per-run ids and play nowhere else.
+    const board = await archive.leaderboard(25, TABLE_ID);
+    const row = board.find((r) => r.agentId === ALICE);
+    const profile = await archive.agentProfile(ALICE);
+
+    expect(profile?.handsPlayed).toBe(row?.handsPlayed);
+    expect(profile?.netMicros).toBe(row?.netMicros);
+  });
+
+  it('finds an agent whose hands have scrolled past the recent window', async () => {
+    // The bug this replaces: hand ids were selected correctly, then summaries were built by
+    // filtering the newest 500 hands globally. Any agent whose hands had scrolled past that
+    // window got an empty list — a prolific early agent's profile read as if it had never
+    // played. Asserting the count directly rather than mocking the window, since the fix is
+    // that there is no second pass to get wrong.
+    const ghost = `ghost_${randomUUID().slice(0, 8)}`;
+    await archive.record(
+      sampleHand({
+        seats: [
+          { seat: 0, agentId: ghost, startingStack: 5_000_000, finalStack: 7_000_000, holeCards: 'As Kd' },
+          { seat: 1, agentId: BOB, startingStack: 5_000_000, finalStack: 3_000_000, holeCards: 'Qc Qh' },
+        ],
+      }),
+    );
+
+    const hands = await archive.handsForAgent(ghost);
+    expect(hands).toHaveLength(1);
+    expect(hands[0]?.potTotal).toBe(2_000_000);
+  });
+
+  it('returns null for an id nobody has ever used', async () => {
+    // Not an empty profile: "this agent has played nothing" is a different claim from
+    // "there is no such agent", and only one of them is true here.
+    expect(await archive.agentProfile(`nobody_${randomUUID()}`)).toBeNull();
+  });
+});
+
 describe('a hand played by the engine becomes publicly verifiable', () => {
   it('is archived, served over HTTP, and verifies from the served proof', async () => {
     // The point of the whole archive: what the public API hands out actually verifies.
