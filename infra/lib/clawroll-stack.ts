@@ -39,7 +39,6 @@ import {
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as ecs from 'aws-cdk-lib/aws-ecs';
 import * as ecsPatterns from 'aws-cdk-lib/aws-ecs-patterns';
-import * as elasticache from 'aws-cdk-lib/aws-elasticache';
 import * as kms from 'aws-cdk-lib/aws-kms';
 import * as logs from 'aws-cdk-lib/aws-logs';
 import * as rds from 'aws-cdk-lib/aws-rds';
@@ -140,25 +139,13 @@ export class ClawrollStack extends Stack {
       enablePerformanceInsights: false,
     });
 
-    const redisSubnets = new elasticache.CfnSubnetGroup(this, 'RedisSubnets', {
-      description: 'Clawroll Redis',
-      subnetIds: vpc.selectSubnets({ subnetType: ec2.SubnetType.PRIVATE_ISOLATED }).subnetIds,
-    });
-
-    const redisSecurityGroup = new ec2.SecurityGroup(this, 'RedisSg', {
-      vpc,
-      description: 'Clawroll Redis',
-      allowAllOutbound: false,
-    });
-
-    const redis = new elasticache.CfnCacheCluster(this, 'Redis', {
-      engine: 'redis',
-      cacheNodeType: 'cache.t4g.micro',
-      numCacheNodes: 1,
-      cacheSubnetGroupName: redisSubnets.ref,
-      vpcSecurityGroupIds: [redisSecurityGroup.securityGroupId],
-    });
-    redis.addDependency(redisSubnets);
+    // No Redis.
+    //
+    // It was provisioned here for spectator fan-out, presence and table ownership — none of
+    // which is built, and an idle cache is still ~$12/month. Re-adding it is fifteen lines,
+    // and the moment to do that is when Redis-backed table ownership lands and a second
+    // engine task becomes possible. Paying for infrastructure no code references is the kind
+    // of thing that quietly becomes permanent.
 
     // -----------------------------------------------------------------------
     // Compute
@@ -174,7 +161,6 @@ export class ClawrollStack extends Stack {
     const commonEnvironment = {
       NODE_ENV: 'production',
       SOLANA_RPC_URL: props.solanaRpcUrl ?? 'https://api.devnet.solana.com',
-      REDIS_URL: `redis://${redis.attrRedisEndpointAddress}:${redis.attrRedisEndpointPort}`,
     };
 
     const engine = new ecsPatterns.ApplicationLoadBalancedFargateService(this, 'Engine', {
@@ -271,11 +257,6 @@ export class ClawrollStack extends Stack {
     // treasury is a class of problem worth simply not having.
     database.connections.allowDefaultPortFrom(engine.service, 'engine');
     database.connections.allowDefaultPortFrom(worker, 'wallet worker');
-    redisSecurityGroup.addIngressRule(
-      engine.service.connections.securityGroups[0]!,
-      ec2.Port.tcp(6379),
-      'engine',
-    );
 
     // -----------------------------------------------------------------------
     // Spectator app
