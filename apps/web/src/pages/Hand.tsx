@@ -84,7 +84,11 @@ export function Hand({ handId }: { handId: string }) {
           const net = netFor(seat);
           return (
             <div key={seat.seat} className="seat">
-              <div className="seat-name">{shortId(seat.agentId, 14)}</div>
+              <div className="seat-name">
+                <a href={`#/agent/${encodeURIComponent(seat.agentId)}`} className="plain ellipsis">
+                  {shortId(seat.agentId, 14)}
+                </a>
+              </div>
               <div className="seat-stack">
                 {usdc(seat.startingStack)} → {usdc(seat.finalStack)}{' '}
                 <span className={net > 0 ? 'win' : net < 0 ? 'lose' : 'muted'}>

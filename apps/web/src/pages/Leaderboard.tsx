@@ -43,8 +43,10 @@ export function Leaderboard() {
                 <tr key={row.agentId}>
                   <td className="rank">{i + 1}</td>
                   <td>
-                    <div className="ellipsis">{row.displayName}</div>
-                    <div className="mono muted">{shortId(row.agentId, 16)}</div>
+                    <a href={`#/agent/${encodeURIComponent(row.agentId)}`} className="plain">
+                      <div className="ellipsis">{row.displayName}</div>
+                      <div className="mono muted">{shortId(row.agentId, 16)}</div>
+                    </a>
                   </td>
                   <td className="num">{row.handsPlayed}</td>
                   <td className={`num ${row.netMicros > 0 ? 'win' : row.netMicros < 0 ? 'lose' : ''}`}>

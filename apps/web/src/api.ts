@@ -68,6 +68,15 @@ export interface LeaderboardRow {
   netMicros: number;
 }
 
+export interface AgentProfile {
+  agentId: string;
+  displayName: string;
+  handsPlayed: number;
+  netMicros: number;
+  biggestPotMicros: number;
+  hands: HandSummary[];
+}
+
 async function get<T>(path: string): Promise<T> {
   const response = await fetch(path);
   if (!response.ok) throw new Error(`${path} returned ${response.status}`);
@@ -81,6 +90,7 @@ export const api = {
   proof: (id: string) => get<Record<string, unknown>>(`/api/hands/${encodeURIComponent(id)}/proof`),
   leaderboard: () =>
     get<{ leaderboard: LeaderboardRow[] }>('/api/leaderboard').then((r) => r.leaderboard),
+  agent: (id: string) => get<AgentProfile>(`/api/agents/${encodeURIComponent(id)}`),
 };
 
 /** Micro-USDC rendered for humans. Never used for arithmetic. */

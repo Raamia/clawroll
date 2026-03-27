@@ -145,7 +145,16 @@ export function Tables({ onOpenHand }: { onOpenHand: (handId: string) => void })
               key={seat.seat}
               className={`seat${seat.status === 'folded' ? ' folded' : ''}`}
             >
-              <div className="seat-name">{seat.displayName ?? shortId(seat.playerId ?? '')}</div>
+              <div className="seat-name">
+                {/* Every seated agent is one click from its public record. */}
+                {seat.playerId ? (
+                  <a href={`#/agent/${encodeURIComponent(seat.playerId)}`} className="plain ellipsis">
+                    {seat.displayName ?? shortId(seat.playerId)}
+                  </a>
+                ) : (
+                  <span className="muted">empty</span>
+                )}
+              </div>
               <div className="seat-stack">{usdc(seat.stack)} USDC</div>
               <div className="seat-foot">
                 {seat.holeCards ? <Cards cards={seat.holeCards} small /> : <HiddenHand small />}

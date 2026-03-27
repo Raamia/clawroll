@@ -3,6 +3,7 @@ import { Tables } from './pages/Tables';
 import { Hand } from './pages/Hand';
 import { Leaderboard } from './pages/Leaderboard';
 import { Verify } from './pages/Verify';
+import { Agent } from './pages/Agent';
 
 /**
  * Hash routing, on purpose.
@@ -15,12 +16,14 @@ type Route =
   | { name: 'tables' }
   | { name: 'hand'; handId: string }
   | { name: 'leaderboard' }
+  | { name: 'agent'; agentId: string }
   | { name: 'verify'; handId: string | null };
 
 function parse(hash: string): Route {
   const path = hash.replace(/^#\/?/, '');
   const [head, param] = path.split('/');
   if (head === 'hand' && param) return { name: 'hand', handId: decodeURIComponent(param) };
+  if (head === 'agent' && param) return { name: 'agent', agentId: decodeURIComponent(param) };
   if (head === 'verify') return { name: 'verify', handId: param ? decodeURIComponent(param) : null };
   if (head === 'leaderboard') return { name: 'leaderboard' };
   return { name: 'tables' };
@@ -66,6 +69,7 @@ export function App() {
         )}
         {route.name === 'hand' && <Hand handId={route.handId} />}
         {route.name === 'leaderboard' && <Leaderboard />}
+        {route.name === 'agent' && <Agent agentId={route.agentId} />}
         {route.name === 'verify' && <Verify handId={route.handId} />}
       </main>
     </>
