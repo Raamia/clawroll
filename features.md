@@ -1755,3 +1755,64 @@ to 62.
 **The comments left behind say when to bring it back**: when Redis-backed table ownership
 lands and a second engine task becomes possible. Re-adding it is about fifteen lines, and
 whoever needs it should not have to first work out why it went missing.
+
+---
+
+### F27 — One-command deploy (`infra/bin/`)
+
+**What it does.** `pnpm --filter @clawroll/infra deploy` takes a checkout to a running site:
+preflight, `cdk deploy`, read the stack outputs, build the spectator app, upload it, invalidate
+the CDN.
+
+**Why it exists.** `cdk deploy` brings the infrastructure up and then stops. Four mechanical
+steps stood between that and a site that works, each one a place to paste the wrong identifier
+— and three of them needed values that only exist *after* the deploy finishes.
+
+**It does not use the AWS CLI, and partway through that stopped being a preference.** The
+Homebrew `awscli` on the development machine is built against a Python whose `pyexpat`
+resolves to macOS's older bundled `libexpat`, so every command that parses an XML response
+dies on a missing symbol. `aws --version` works; `aws sts get-caller-identity` does not, and no
+environment variable fixes it — dyld resolves `/usr/lib` from the shared cache before anything
+on the library path. That is somebody else's bug, but a deploy path built on the CLI would have
+made it ours. The JavaScript SDK is already a CDK dependency, speaks the same credential chain,
+and has no Python anywhere in it.
+
+**Preflight runs before anything expensive.** Credentials, Docker, and the RPC endpoint. A
+deploy that dies twenty minutes in has still built images, pushed layers, and left a stack
+mid-update; these three checks take about a second and cover the failures that actually happen.
+A missing `SOLANA_RPC_URL` warns rather than stops, since a room nobody has funded yet works
+fine on the public endpoint.
+
+**Content types and cache headers are set explicitly on upload.** S3 defaults unknown objects
+to `application/octet-stream`, and a stylesheet served that way is ignored by the browser with
+no error anywhere — the site renders unstyled and nothing says why. Hashed assets get a year
+and `immutable`; `index.html` gets `no-cache`, because it is the file naming the current
+hashes and a cached copy of it pins the old bundle forever.
+
+**`put-secret` replaces `aws secretsmanager put-secret-value` for the master seed**, and takes
+the custody question more seriously than a one-liner would. It reads from stdin, not argv — a
+mnemonic on the command line is in the shell history and visible in `ps` to every process on
+the machine, and neither can be undone. It validates through `masterSeedFromMnemonic`, the same
+function the wallet worker derives with, rather than a second copy of the check that might be
+more permissive. And it refuses to overwrite an existing value without `--replace`, because
+replacing the seed orphans every deposit address already handed out.
+
+**A flaw found by running it rather than reading it.** The first version wrapped the value
+lookup in a catch that swallowed every error except a missing secret — so with no credentials
+at all, it printed "Paste the mnemonic" and only failed on the write. Asking someone to type
+their master seed into a process that was always going to fail is a bad way to learn about
+credentials. `DescribeSecret` and `GetSecretValue` are now separate calls, because they answer
+different questions and a missing secret and an empty one raise the identical exception.
+Everything that can fail is checked before the prompt appears.
+
+**What still needs a human**, printed at the end with the real ARNs filled in: writing the
+master seed, and funding the treasury from the faucets. Neither should be automated — the seed
+must be generated somewhere it can actually be kept, and the faucets are interactive.
+
+**Key files.**
+
+| File | Role |
+| --- | --- |
+| `infra/bin/deploy.ts` | Preflight, deploy, upload, invalidate |
+| `infra/bin/put-secret.ts` | Storing the master seed safely |
+| `infra/README.md` | The deploy runbook |
