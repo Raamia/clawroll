@@ -1,6 +1,6 @@
 # Deploying Clawroll
 
-Ship-fast tier: single-AZ, minimal, roughly **$70–120/month**. Written so hardening is a
+Ship-fast tier: single-AZ, minimal, roughly **$60–110/month**. Written so hardening is a
 change of parameters rather than a rewrite.
 
 ## What gets created
@@ -9,26 +9,33 @@ change of parameters rather than a rewrite.
 | --- | --- |
 | VPC | 2 AZs, 1 NAT gateway, public / private-egress / isolated subnets |
 | RDS | Postgres 16, `db.t4g.small`, single-AZ, encrypted, isolated subnets, deletion protection |
-| ElastiCache | Redis `cache.t4g.micro`, isolated subnets |
 | ECS Fargate | `engine` behind an ALB, `wallet-worker` with no ingress |
 | S3 + CloudFront | Spectator app, origin access control, no public bucket |
 | KMS + Secrets Manager | Database credentials and the Solana master seed |
 
+62 resources. There is no cache tier — see *Things that are deliberate* below.
+
 ## Prerequisites
 
-```bash
-brew install awscli
-```
+Credentials, in the environment or a profile. Anything the AWS SDK's default chain
+understands works:
 
 ```bash
-aws configure
+export AWS_PROFILE=your-profile
 ```
+
+Docker must be running — the engine and worker images are built during the deploy.
 
 Bootstrap the account once per region:
 
 ```bash
 pnpm --filter @clawroll/infra exec cdk bootstrap
 ```
+
+**The AWS CLI is not required for any of this.** Everything here runs through the JavaScript
+SDK, which CDK already depends on. That is worth knowing if `aws` is broken on your machine —
+the Homebrew build on macOS 26 has a `pyexpat` symbol mismatch that kills every command
+parsing an XML response, and none of it touches this path.
 
 ## Get a dedicated devnet RPC endpoint first
 
@@ -40,18 +47,29 @@ credited. Get a Helius or QuickNode devnet URL and pass it through:
 export SOLANA_RPC_URL="https://devnet.helius-rpc.com/?api-key=..."
 ```
 
+The deploy warns if this is unset. It is not fatal — a room nobody has funded yet works fine —
+but it must be set before the first deposit.
+
 ## Deploy
 
 ```bash
-pnpm --filter @clawroll/infra exec cdk deploy
+pnpm --filter @clawroll/infra deploy
 ```
 
-Docker images are built and pushed as part of `deploy` — no separate step.
+That runs the whole thing: preflight, `cdk deploy` (images built and pushed as part of it),
+then reads the stack outputs and uses them to build the spectator app, upload it to the
+bucket, and invalidate the CDN. Expect several minutes, most of it Docker.
+
+Preflight fails fast on the three things that actually go wrong — no credentials, Docker not
+running, no dedicated RPC — because a deploy that dies twenty minutes in has still pushed
+image layers and left the stack mid-update.
+
+To run only the infrastructure step: `pnpm --filter @clawroll/infra deploy:stack`.
 
 ## Populate the master seed
 
-**The stack creates this secret empty, deliberately.** A mnemonic passed through CDK ends up
-in the CloudFormation template, the change set, and CloudTrail — three places it can never be
+**The stack creates this secret empty, deliberately.** A mnemonic passed through CDK ends up in
+the CloudFormation template, the change set, and CloudTrail — three places it can never be
 removed from. This is the custody position for every deposit address in the system.
 
 Generate one offline and store it somewhere you will still have it in a year:
@@ -60,15 +78,18 @@ Generate one offline and store it somewhere you will still have it in a year:
 node -e "import('@clawroll/solana').then(m => console.log(m.generateMasterMnemonic()))"
 ```
 
-Then put it in, using the `MasterSeedSecretArn` from the stack outputs:
+Then put it in, using the `MasterSeedSecretArn` from the deploy output:
 
 ```bash
-aws secretsmanager put-secret-value --secret-id <MasterSeedSecretArn> --secret-string "<mnemonic>"
+pnpm --filter @clawroll/infra put-secret <MasterSeedSecretArn>
 ```
 
-The wallet worker will not start until this is set — it validates the BIP-39 checksum, so a
-mistyped word fails loudly rather than deriving a different valid seed whose addresses nobody
-can spend.
+It reads the phrase from stdin rather than argv — a mnemonic on the command line lands in your
+shell history and is visible in `ps` to every other process on the machine, and neither can be
+taken back. It validates the BIP-39 checksum before storing anything, using the same function
+the wallet worker derives with, so a mistyped word fails immediately rather than deriving a
+different *valid* seed whose addresses nobody can spend. It refuses to overwrite an existing
+value without `--replace`, because replacing the seed orphans every address already handed out.
 
 ## Fund the treasury
 
@@ -80,19 +101,6 @@ withdrawals from. Both come from faucets:
 
 The treasury address is printed in the wallet worker's logs at startup.
 
-## Deploy the spectator app
-
-```bash
-pnpm --filter @clawroll/web build
-```
-
-```bash
-aws s3 sync apps/web/dist "s3://<SiteBucketName>" --delete
-```
-
-The SPA uses hash routing, so no CloudFront rewrite rules are needed — a deep link to a hand
-replay resolves to `index.html` and the fragment does the rest.
-
 ## Things that are deliberate, and will look wrong
 
 **One engine task, and `minHealthyPercent: 0`.** The runtime holds the table in memory, so two
@@ -100,6 +108,11 @@ tasks would each own a *different* copy of the same table — dealing two differ
 one table id. Deploys therefore stop the old task before starting the new one, accepting a few
 seconds of downtime. Redis-backed table ownership is designed for but not built; **bumping
 `desiredCount` before it exists is a correctness bug, not a scaling win.**
+
+**No cache tier.** ElastiCache was in this stack for spectator fan-out, presence, and table
+ownership, and no application code ever referenced it — CDK set `REDIS_URL` and nothing read
+it. It came out rather than sit there at $12/month looking load-bearing. Re-adding it is about
+fifteen lines, and the moment for that is when table ownership actually needs it.
 
 **One wallet worker, always.** Two scanners would be harmless — the ledger refuses to credit a
 signature twice — but two withdrawal workers would drive the same queue and sign concurrently
@@ -117,6 +130,11 @@ Losing it to a `cdk destroy` typo is not a recoverable mistake. Tearing the stac
 the database, the S3 bucket, the KMS key and the master seed behind on purpose; remove them by
 hand when you actually mean it.
 
+**`index.html` is uploaded with `no-cache`, assets with a year.** The asset filenames contain
+content hashes, so they are immutable by construction. `index.html` is the file that names the
+current hashes — a cached copy of it pins the old bundle forever, which looks exactly like a
+deploy that did not take.
+
 ## Cost notes
 
 The NAT gateway (~$32/month) is the largest single line. There is one, not one per AZ: a NAT
@@ -129,6 +147,7 @@ load balancer.
   WebSocket is `ws://`, not `wss://` — fine for devnet play money, not fine for anything else.
 - **No autoscaling, no multi-AZ, no WAF.** Deliberate at this tier; all are parameter changes
   against this same stack.
-- **No CI/CD.** `cdk deploy` from a laptop.
-- **Agent registration is in-memory.** `InMemoryAgentDirectory` means API keys do not survive
-  a restart. The interface exists so a Postgres-backed implementation is a one-line swap.
+- **No CI/CD.** Deployed from a laptop.
+- **No self-service registration.** Agents are created with the registration CLI, which needs
+  the master seed and therefore cannot be an endpoint without widening the blast radius of a
+  compromise.
