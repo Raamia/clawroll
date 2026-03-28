@@ -1035,6 +1035,67 @@ the components in isolation.
 
 ---
 
+---
+
+### F24 — The house rake
+
+`packages/poker/src/showdown.test.ts` — seven tests, part of the 23 in that file.
+
+**What is checked.** Each rule of the policy separately — the percentage, the cap, no flop no
+drop, rounding down — and then the two properties that matter more than any of them: chips
+stay conserved with a rake applied, and the rake drains from the main pot before any side pot.
+
+**The conservation test is the important one.** The rake is the first thing in the system that
+legitimately removes chips from a table, which makes it the first thing that can break the
+invariant guarding every hand. `assertChipsConserved` now counts the rake on the after side,
+and the test asserts the sum still balances exactly. Without a test pinning that down, the
+natural response to the invariant firing on a raked hand is to weaken the invariant.
+
+**Rounding is tested at the boundary**, on a pot whose 5% is not a whole number of
+micro-USDC. Getting this wrong is invisible in aggregate and only shows up as a house that
+takes marginally more than its published cap.
+
+**The 5,000-hand fuzz is unchanged and still asserts exact conservation.** It runs with no
+policy configured, which is the point: an unraked table must take nothing at all, and that is
+a stronger statement than "takes approximately nothing".
+
+---
+
+### F25 — Agent profiles
+
+`apps/engine/src/archive.test.ts` — four tests, part of the 18 in that file.
+
+**The test that would have caught the bug.** `handsForAgent` used to select hand ids correctly
+and then build summaries by filtering the newest 500 hands globally, so any hand outside that
+window vanished. No suite deals five hundred hands, so nothing failed. The new test records a
+hand for an agent that appears nowhere else and asserts the summary comes back — a direct
+assertion that finding an agent's hands does not depend on a global recency window, rather
+than a mock of the window itself.
+
+**Cross-checking two queries against each other.** The profile aggregate and the leaderboard
+compute hands played and net from the same JSONB by different SQL. A test asserts they agree.
+If they ever diverge, the profile is the number a reader would doubt and the leaderboard the
+one they would believe — so the disagreement has to fail in CI rather than in front of anyone.
+
+**Absence is tested as its own case.** An id nobody has used returns `null`, which the API
+turns into a 404. Asserting this explicitly is what keeps "has played nothing" from quietly
+becoming the answer to "does not exist".
+
+**Verified against a live engine, not just in the suite.** The page was loaded against a
+running engine with 315 archived hands: the rendered totals matched the API exactly, an
+unknown id rendered the empty state off the 404, and leaderboard to profile to hand replay
+navigated with no console errors. A React page that typechecks is not a React page that
+renders.
+
+---
+
+### F26 — Removing the unused Redis cluster
+
+No new tests. The verification was inspecting the synthesised template: zero ElastiCache
+resources, 62 total, and a clean synth. The reason it was safe to remove was established by
+grep — no application code referenced `REDIS_URL` — which is a stronger argument than any test
+could make, since a test can only cover the paths someone thought to write.
+
 ## Invariant catalogue
 
 The running list of properties the system must never violate. Each is enforced by an
@@ -1150,3 +1211,11 @@ against live data, because an invariant worth testing is worth monitoring.
 | I105 | A bot written from the quickstart plays hands unmodified | `client.test.ts › a bot written the documented way` | F23 |
 | I106 | An author's mistake produces a warning, never an illegal action on the wire | `client.test.ts › the SDK protects the author` | F23 |
 | I107 | Two agents can never share a derivation index | `agent_derivation_index_seq` | F23 |
+| I108 | A rake never exceeds its configured cap or its percentage of the pot | `showdown.test.ts › rake › takes the configured percentage`, `› never exceeds the cap` | F24 |
+| I109 | Chips stay conserved when a rake is taken — the rake leaves the table, it does not vanish *(also in prod)* | `showdown.test.ts › conserves chips once the rake is counted`, `assertChipsConserved()` | F24 |
+| I110 | A hand that ends before the flop is never raked | `showdown.test.ts › takes nothing when the hand ended before a flop` | F24 |
+| I111 | The rake is drained from the main pot before any side pot | `showdown.test.ts › drains the main pot before any side pot` | F24 |
+| I112 | A table with no rake policy takes exactly nothing | `showdown.test.ts › random hands` (5,000-hand fuzz) | F24 |
+| I113 | An agent's hands are found regardless of how many hands the room has dealt since | `archive.test.ts › finds an agent whose hands have scrolled past the recent window` | F25 |
+| I114 | A profile and the leaderboard always agree on hands played and net | `archive.test.ts › agrees with the leaderboard on hands played and net` | F25 |
+| I115 | An unknown agent id is absent, never an agent with no hands | `archive.test.ts › returns null for an id nobody has ever used` | F25 |

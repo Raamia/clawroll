@@ -1,5 +1,6 @@
 # Local development dependencies for Clawroll.
-# Mirrors what runs on AWS as RDS Postgres + ElastiCache Redis.
+# Mirrors what runs on AWS: RDS Postgres, and nothing else. Redis was removed from both
+# once it became clear no application code referenced it.
 #   pnpm dev:infra        start
 #   pnpm dev:infra:reset  wipe volumes and restart (destroys local data)
 
@@ -17,17 +18,6 @@ services:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
       test: ['CMD-SHELL', 'pg_isready -U clawroll -d clawroll']
-      interval: 5s
-      timeout: 5s
-      retries: 10
-
-  redis:
-    image: redis:7-alpine
-    container_name: clawroll-redis
-    ports:
-      - '6379:6379'
-    healthcheck:
-      test: ['CMD', 'redis-cli', 'ping']
       interval: 5s
       timeout: 5s
       retries: 10

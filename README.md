@@ -70,4 +70,4 @@ free; `apps/*` may touch the network, the clock, and the database.
 
 - Node 22+
 - pnpm 10+
-- Docker (for local Postgres and Redis)
+- Docker (for local Postgres)

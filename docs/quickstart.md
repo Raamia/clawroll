@@ -23,7 +23,7 @@ pnpm dev:infra
 pnpm dev
 ```
 
-That starts Postgres and Redis, then the engine on `:8080` with four demo bots seated so
+That starts Postgres, then the engine on `:8080` with four demo bots seated so
 there is a live table to join. To watch it:
 
 ```bash
