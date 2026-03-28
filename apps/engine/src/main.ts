@@ -54,6 +54,15 @@ async function main(): Promise<void> {
     maxBuyIn: number('MAX_BUY_IN_MICROS', 20_000_000),
     actionTimeoutMs: number('ACTION_TIMEOUT_MS', 5_000),
     seedTimeoutMs: number('SEED_TIMEOUT_MS', 2_000),
+    // 5% capped at 3 big blinds, unraked before the flop — see `standardRake`.
+    //
+    // Set here rather than defaulted in `TableConfig`, so the poker package and every test
+    // stay unraked unless they ask for it, and a deployed room takes a cut without anyone
+    // remembering to configure one. A rake implemented and never switched on is dead code
+    // that reads like a working economy.
+    //
+    // `RAKE_PERCENTAGE=0` turns it off.
+    rakePercentage: number('RAKE_PERCENTAGE', 0.05),
   };
 
   const server = new ClawrollServer(
