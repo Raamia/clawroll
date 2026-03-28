@@ -65,6 +65,11 @@ class Auditor {
     this.socket?.close();
   }
 
+  /** How many hands this spectator has seen finish. */
+  completedHands(): number {
+    return this.messages.filter((m) => m.type === 'hand_end').length;
+  }
+
   /** Verify every completed hand using only what was broadcast publicly. */
   audit(): { verified: number; failed: string[] } {
     const starts = new Map<string, Extract<ServerMessage, { type: 'hand_start' }>>();
@@ -133,6 +138,22 @@ export async function runSession(targetHands = 20): Promise<SessionResult> {
   const deadline = Date.now() + 30_000;
   while (server.table.handCount < targetHands && Date.now() < deadline) {
     await new Promise((r) => setTimeout(r, 25));
+  }
+
+  // Let the spectator catch up before auditing.
+  //
+  // `hand_end` is broadcast before `handsPlayed` is incremented, so the moment the table
+  // reports N finished hands, the Nth `hand_end` frame may still be in flight to the
+  // auditor's socket — same process, but the delivery is still asynchronous. Auditing right
+  // then compares the table's count against a feed one message behind it, and the run fails
+  // claiming a hand was unverifiable when it was merely unread.
+  //
+  // Waiting for the counts to agree keeps the assertion at full strength: every hand the
+  // table finished is still required to verify from the public feed alone. It just stops
+  // the harness from asking the question before the answer has arrived.
+  const settled = Date.now() + 5_000;
+  while (auditor.completedHands() < server.table.handCount && Date.now() < settled) {
+    await new Promise((r) => setTimeout(r, 10));
   }
 
   const standings = bots.map((bot, i) => ({
