@@ -214,6 +214,31 @@ export class ClawrollStack extends Stack {
     // SIGTERM actually reach Node; this is the window it gets to act on it.
     engine.targetGroup.setAttribute('deregistration_delay.timeout_seconds', '60');
 
+    // The worker's log group is explicit rather than CDK-generated, because the one-off
+    // registration task writes here too and `register-agent` has to be able to find its
+    // output by name.
+    const workerLogs = new logs.LogGroup(this, 'WalletWorkerLogs', {
+      retention: logs.RetentionDays.ONE_MONTH,
+      removalPolicy: RemovalPolicy.DESTROY,
+    });
+
+    const workerTask = new ecs.FargateTaskDefinition(this, 'WalletWorkerTask', {
+      cpu: 256,
+      memoryLimitMiB: 512,
+    });
+    workerTask.addContainer('worker', {
+      image: ecs.ContainerImage.fromAsset('..', {
+        file: 'Dockerfile',
+        buildArgs: { SERVICE: 'wallet-worker' },
+      }),
+      environment: commonEnvironment,
+      secrets: {
+        DATABASE_URL: ecs.Secret.fromSecretsManager(database.secret!, 'uri'),
+        SOLANA_MASTER_MNEMONIC: ecs.Secret.fromSecretsManager(masterSeed),
+      },
+      logging: ecs.LogDrivers.awsLogs({ streamPrefix: 'wallet-worker', logGroup: workerLogs }),
+    });
+
     const worker = new ecs.FargateService(this, 'WalletWorker', {
       cluster,
       desiredCount: 1,
@@ -228,28 +253,7 @@ export class ClawrollStack extends Stack {
       // avoiding it is a brief pause in deposit scanning during a deploy.
       minHealthyPercent: 0,
       maxHealthyPercent: 100,
-      taskDefinition: (() => {
-        const task = new ecs.FargateTaskDefinition(this, 'WalletWorkerTask', {
-          cpu: 256,
-          memoryLimitMiB: 512,
-        });
-        task.addContainer('worker', {
-          image: ecs.ContainerImage.fromAsset('..', {
-            file: 'Dockerfile',
-            buildArgs: { SERVICE: 'wallet-worker' },
-          }),
-          environment: commonEnvironment,
-          secrets: {
-            DATABASE_URL: ecs.Secret.fromSecretsManager(database.secret!, 'uri'),
-            SOLANA_MASTER_MNEMONIC: ecs.Secret.fromSecretsManager(masterSeed),
-          },
-          logging: ecs.LogDrivers.awsLogs({
-            streamPrefix: 'wallet-worker',
-            logRetention: logs.RetentionDays.ONE_MONTH,
-          }),
-        });
-        return task;
-      })(),
+      taskDefinition: workerTask,
     });
 
     // Exactly one worker, always. Two would double-scan (harmless — the ledger is idempotent)
@@ -307,6 +311,34 @@ export class ClawrollStack extends Stack {
     new CfnOutput(this, 'DatabaseEndpoint', {
       value: database.dbInstanceEndpointAddress,
       description: 'Reachable only from inside the VPC',
+    });
+
+    // Everything `register-agent` needs to run the registration CLI as a one-off task.
+    //
+    // Registering an agent writes to Postgres and derives from the master seed, and the
+    // database deliberately sits in isolated subnets with no public access — so it cannot be
+    // done from a laptop, and without these outputs it could not be done at all. Running the
+    // existing worker task definition with an overridden command keeps registration inside
+    // the VPC without a bastion, a public database, or a second copy of the seed.
+    new CfnOutput(this, 'ClusterName', {
+      value: cluster.clusterName,
+      description: 'For running one-off tasks',
+    });
+    new CfnOutput(this, 'WalletWorkerTaskArn', {
+      value: workerTask.taskDefinitionArn,
+      description: 'Task definition used for one-off registration',
+    });
+    new CfnOutput(this, 'WalletWorkerLogGroup', {
+      value: workerLogs.logGroupName,
+      description: 'Where one-off task output lands',
+    });
+    new CfnOutput(this, 'TaskSubnetIds', {
+      value: vpc.selectSubnets({ subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS }).subnetIds.join(','),
+      description: 'Private subnets with egress, for one-off tasks',
+    });
+    new CfnOutput(this, 'WorkerSecurityGroupId', {
+      value: worker.connections.securityGroups[0]!.securityGroupId,
+      description: 'Security group permitted to reach the database',
     });
   }
 }

@@ -224,11 +224,11 @@ async function main(): Promise<void> {
      mnemonic passed through CDK ends up in the template, the change set, and CloudTrail,
      three places it can never be removed from. Generate one somewhere you can keep it:
 
-       node -e "import('@clawroll/solana').then(m => console.log(m.generateMasterMnemonic()))"
+       pnpm --filter @clawroll/infra gen-mnemonic
 
      then store it:
 
-       node infra/bin/put-secret.ts ${outputs['MasterSeedSecretArn'] ?? '<MasterSeedSecretArn>'}
+       pnpm --filter @clawroll/infra put-secret ${outputs['MasterSeedSecretArn'] ?? '<MasterSeedSecretArn>'}
 
      The wallet worker will not start until this is set. It validates the BIP-39 checksum, so
      a mistyped word fails loudly rather than deriving a different valid seed whose addresses

@@ -75,7 +75,7 @@ removed from. This is the custody position for every deposit address in the syst
 Generate one offline and store it somewhere you will still have it in a year:
 
 ```bash
-node -e "import('@clawroll/solana').then(m => console.log(m.generateMasterMnemonic()))"
+pnpm --filter @clawroll/infra gen-mnemonic
 ```
 
 Then put it in, using the `MasterSeedSecretArn` from the deploy output:
