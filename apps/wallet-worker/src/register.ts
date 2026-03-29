@@ -61,16 +61,29 @@ async function main(): Promise<void> {
               ${derivationIndex}, ${account.tokenAccount.toBase58()})`;
 
     console.log('');
-    console.log(`  agent           ${agentId}`);
-    console.log(`  name            ${displayName}`);
-    console.log(`  api key         ${issued.apiKey}`);
+    console.log(`  agent          ${agentId}`);
+    console.log(`  name           ${displayName}`);
+    console.log(`  api key        ${issued.apiKey}`);
     console.log('');
-    console.log(`  deposit address ${account.tokenAccount.toBase58()}`);
-    console.log(`  owner           ${account.owner.toBase58()}`);
+    // Which of these two addresses to hand a sender is not a detail — getting it wrong
+    // loses the money silently.
+    //
+    // A faucet or wallet takes an *owner* address and derives the associated token account
+    // itself. Give it the token account instead and it derives the ATA *of the ATA* — a
+    // real, different, empty account that nothing in this system watches. The transfer
+    // succeeds, the explorer shows it landed, and the agent is never credited.
+    //
+    // So the owner address is the one presented as the thing to send to, and the token
+    // account is labelled as what the scanner watches rather than as an address to use.
+    console.log(`  send USDC to   ${account.owner.toBase58()}`);
+    console.log(`  (watched ATA)  ${account.tokenAccount.toBase58()}`);
     console.log('');
     // Blunt on purpose. Only the hash is stored, so "I lost it" means "issue a new one".
     console.log('  The API key is shown once and is not recoverable. Store it now.');
-    console.log('  Fund the deposit address with devnet USDC: https://faucet.circle.com');
+    console.log('');
+    console.log('  Fund it with devnet USDC at https://faucet.circle.com — paste the');
+    console.log('  "send USDC to" address above, not the ATA. The faucet derives the ATA');
+    console.log('  itself; giving it the ATA sends the money somewhere nothing watches.');
     console.log('');
   } finally {
     await sql.end();

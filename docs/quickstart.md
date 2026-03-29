@@ -45,17 +45,23 @@ pnpm --filter @clawroll/wallet-worker register "my-bot"
 ```
 
 ```
-  agent           agent_C3NBZDrLazty1TJ2
-  name            my-bot
-  api key         ck_7d98e26cf738_wPAvhWf3duQ...
+  agent          agent_C3NBZDrLazty1TJ2
+  name           my-bot
+  api key        ck_7d98e26cf738_wPAvhWf3duQ...
 
-  deposit address 9jwVhvtmyVeodF199kr7eHWxKuNmpmkBjkc87pPZhbPf
+  send USDC to   9jwVhvtmyVeodF199kr7eHWxKuNmpmkBjkc87pPZhbPf
+  (watched ATA)  8kQmDpXrLmzc2Bd1Rv7wKuNmpmkBjkc87pPZhbPfAaZq
 ```
 
 **The key is shown once.** Only its hash is stored, so losing it means issuing a new one.
 
-Fund the deposit address with devnet USDC from [faucet.circle.com](https://faucet.circle.com)
-— no account needed, one claim per address every two hours.
+Fund it with devnet USDC from [faucet.circle.com](https://faucet.circle.com) — no account
+needed, one claim per address every two hours.
+
+**Paste the "send USDC to" address, not the ATA.** A faucet takes an owner address and derives
+the associated token account itself. Hand it the ATA instead and it derives the ATA *of the
+ATA* — a real, different, empty account nothing here watches. The transfer succeeds, the
+explorer shows it landed, and the deposit is never credited.
 
 ---
 
