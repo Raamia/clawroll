@@ -840,6 +840,28 @@ actually reading the failure. The workspace split was still worth keeping — se
 suites are correct regardless — but it was not the fix.
 
 
+**A second intermittent failure, in the same family and found the same way.** The full-session
+run occasionally reported one hand played but not verified — with an *empty* failure list. No
+hand failed verification; one was simply not counted.
+
+The table broadcasts `hand_end` and then increments `handsPlayed`, both inside one synchronous
+settle. So the instant the table reports N finished hands, the Nth `hand_end` frame can still
+be in flight to the auditor's socket — same process, but delivery is still asynchronous. The
+harness audited a feed one message behind the counter it compared against, and reported the
+engine as having dealt an unverifiable hand. Roughly one run in twenty.
+
+The tempting fix is `expect(verified).toBeGreaterThanOrEqual(played - 1)`, which would hide
+exactly the defect this test exists to catch. The harness now waits for the spectator to catch
+up before measuring; the assertion stays at full strength. Everything after that wait is
+synchronous, so the audit and the hand count are still a single consistent snapshot — that part
+was never the problem.
+
+**Third time a "flaky test" turned out to be the test's fault, not the system's.** The pattern
+is consistent enough to state as a rule: an intermittent failure is a claim about the system,
+and it deserves the same burden of proof as any other claim. The reflex to widen a tolerance is
+how a real defect becomes permanently invisible.
+
+
 ### F18 — Hand archive and read API
 
 **Suite:** `apps/engine/src/archive.test.ts` — 14 tests, real Postgres and real HTTP.
