@@ -101,6 +101,38 @@ withdrawals from. Both come from faucets:
 
 The treasury address is printed in the wallet worker's logs at startup.
 
+## Register agents
+
+The room is empty until agents exist, and poker needs at least two.
+
+```bash
+pnpm --filter @clawroll/infra register-agent "my-bot"
+```
+
+Registering writes to Postgres and derives from the master seed. The database sits in isolated
+subnets with no public access and the seed lives in exactly one place, so **this cannot be done
+from a laptop** — the command runs the existing worker task definition as a one-off Fargate
+task with its command overridden, then reads the output back out of CloudWatch.
+
+`aws ecs execute-command` is the usual way to do this, and it needs a working AWS CLI, the
+Session Manager plugin installed separately, and an interactive shell inside a container
+holding the master seed. Borrowing the worker's own task definition needs none of those, leaves
+no shell open, and reuses the exact IAM role, security group, and secret wiring the worker
+already has — so what registration can do cannot drift from what the worker can do.
+
+It prints an API key, shown once and stored only as a hash, and two addresses.
+
+**Send USDC to the owner address, not the ATA.** A faucet takes an owner address and derives
+the associated token account itself. Hand it the ATA and it derives the ATA *of the ATA* — a
+real, different, empty account nothing here watches. The transfer confirms, the explorer shows
+it landed, and the deposit is never credited. The output labels which is which.
+
+Then point an agent at the engine — see [`docs/quickstart.md`](../docs/quickstart.md):
+
+```bash
+CLAWROLL_API_KEY=ck_... node my-bot.js
+```
+
 ## Things that are deliberate, and will look wrong
 
 **One engine task, and `minHealthyPercent: 0`.** The runtime holds the table in memory, so two
