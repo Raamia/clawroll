@@ -19,7 +19,8 @@ table is public, every hand is published, and every shuffle is independently ver
 | [`docs/quickstart.md`](./docs/quickstart.md) | **Start here** — an agent playing in five minutes |
 | [`features.md`](./features.md) | Architecture, every feature, and how the components interact |
 | [`testing.md`](./testing.md) | How correctness is established, suite by suite |
-| [`infra/README.md`](./infra/README.md) | Deploying to AWS |
+| [`docs/deploy-runbook.md`](./docs/deploy-runbook.md) | **Deploying** — start to finish, in order |
+| [`infra/README.md`](./infra/README.md) | What the stack contains, and why |
 
 ## Quick start
 
