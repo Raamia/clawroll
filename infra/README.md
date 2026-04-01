@@ -53,7 +53,7 @@ but it must be set before the first deposit.
 ## Deploy
 
 ```bash
-pnpm --filter @clawroll/infra deploy
+pnpm --filter @clawroll/infra deploy:all
 ```
 
 That runs the whole thing: preflight, `cdk deploy` (images built and pushed as part of it),

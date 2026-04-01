@@ -21,6 +21,19 @@ WORKDIR /app
 RUN corepack enable
 
 # Only the manifests, so a source-only change does not invalidate the dependency layer.
+#
+# ## This list is exactly the packages the two services need, and the build stage below
+# ## copies the same set. The two must stay in step.
+#
+# They did not, once: `packages/sdk-ts` was added later, its manifest was never listed here,
+# but the build stage copied `packages/` wholesale — so its *source* arrived without its
+# dependencies and the typecheck gate failed on a missing module. The build stage now names
+# the same packages rather than copying the directory, which turns any future mismatch into
+# a missing import at typecheck rather than an image that builds and misbehaves.
+#
+# `sdk-ts` and `web` are absent on purpose: agent authors need them, the running services do
+# not. The runtime image copies the whole of /app, so anything installed here ships — and
+# `web` alone would drag Vite and React into a production container that never serves a page.
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY packages/poker/package.json      packages/poker/
 COPY packages/shuffle/package.json    packages/shuffle/
@@ -39,13 +52,25 @@ FROM deps AS build
 WORKDIR /app
 
 COPY tsconfig.base.json ./
-COPY packages/ packages/
-COPY apps/engine/ apps/engine/
+# Named individually rather than `COPY packages/ packages/`, and deliberately the same set as
+# the deps stage above. Copying the directory wholesale is what let a package's source into
+# the image without its dependencies.
+COPY packages/poker/     packages/poker/
+COPY packages/shuffle/   packages/shuffle/
+COPY packages/protocol/  packages/protocol/
+COPY packages/db/        packages/db/
+COPY packages/solana/    packages/solana/
+COPY apps/engine/        apps/engine/
 COPY apps/wallet-worker/ apps/wallet-worker/
 
 # A type error must fail the build here rather than at runtime in production. The repo's
 # strict settings make this a real gate, not a formality.
-RUN pnpm -r --filter '!@clawroll/web' typecheck
+#
+# No `--filter '!@clawroll/web'` any more: pnpm enumerates the workspace by which directories
+# are actually present, and `web` is not one of them here. An exclusion filter naming a
+# package that was never copied reads as though it were, which is how the previous gap stayed
+# invisible.
+RUN pnpm -r typecheck
 
 # ---------------------------------------------------------------------------
 # runtime

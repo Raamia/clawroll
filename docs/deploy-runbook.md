@@ -55,7 +55,7 @@ pnpm --filter @clawroll/infra exec cdk bootstrap
 Make sure Docker is running first — the engine and worker images are built during this step.
 
 ```bash
-pnpm --filter @clawroll/infra deploy
+pnpm --filter @clawroll/infra deploy:all
 ```
 
 Preflight checks credentials, Docker and the RPC endpoint before anything expensive starts.
