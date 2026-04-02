@@ -15,11 +15,12 @@
     "register": "tsx ./src/register.ts"
   },
   "dependencies": {
+    "@aws-sdk/client-secrets-manager": "^3.700.0",
     "@clawroll/db": "workspace:*",
+    "@clawroll/engine": "workspace:*",
     "@clawroll/solana": "workspace:*",
-    "@solana/web3.js": "^1.98.0",
-    "postgres": "^3.4.7",
     "@solana/spl-token": "^0.4.9",
-    "@clawroll/engine": "workspace:*"
+    "@solana/web3.js": "^1.98.0",
+    "postgres": "^3.4.7"
   }
 }

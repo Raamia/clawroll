@@ -231,10 +231,21 @@ export class ClawrollStack extends Stack {
         file: 'Dockerfile',
         buildArgs: { SERVICE: 'wallet-worker' },
       }),
-      environment: commonEnvironment,
+      // The seed's *ARN*, not the seed. The worker fetches the value itself at startup.
+      //
+      // Injecting it here is the obvious thing and it makes the stack undeployable. ECS
+      // resolves secrets before starting the container, and this secret is created
+      // deliberately empty — its ARN does not exist until this deploy finishes. So on a
+      // first deploy the task could never launch, the service's circuit breaker tripped,
+      // and CloudFormation rolled the whole stack back. The deploy needed the secret and
+      // the secret needed the deploy.
+      //
+      // Passing the ARN turns "not set yet" into a state the worker can wait in rather than
+      // a failure to launch, so the deploy completes and the operator populates the secret
+      // afterwards with no redeploy.
+      environment: { ...commonEnvironment, MASTER_SEED_SECRET_ARN: masterSeedResource.ref },
       secrets: {
         DATABASE_URL: ecs.Secret.fromSecretsManager(database.secret!, 'uri'),
-        SOLANA_MASTER_MNEMONIC: ecs.Secret.fromSecretsManager(masterSeed),
       },
       logging: ecs.LogDrivers.awsLogs({ streamPrefix: 'wallet-worker', logGroup: workerLogs }),
     });
@@ -259,6 +270,11 @@ export class ClawrollStack extends Stack {
     // Exactly one worker, always. Two would double-scan (harmless — the ledger is idempotent)
     // but would also both drive the withdrawal queue, and concurrent signing from one
     // treasury is a class of problem worth simply not having.
+    // The worker reads the master seed at runtime rather than having ECS inject it, so the
+    // task role needs read access to the secret and to the key it is encrypted under.
+    masterSeed.grantRead(workerTask.taskRole);
+    key.grantDecrypt(workerTask.taskRole);
+
     database.connections.allowDefaultPortFrom(engine.service, 'engine');
     database.connections.allowDefaultPortFrom(worker, 'wallet worker');
 

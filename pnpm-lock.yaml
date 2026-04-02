@@ -48,6 +48,9 @@ importers:
 
   apps/wallet-worker:
     dependencies:
+      '@aws-sdk/client-secrets-manager':
+        specifier: ^3.700.0
+        version: 3.1105.0
       '@clawroll/db':
         specifier: workspace:*
         version: link:../../packages/db
