@@ -1816,3 +1816,45 @@ must be generated somewhere it can actually be kept, and the faucets are interac
 | `infra/bin/deploy.ts` | Preflight, deploy, upload, invalidate |
 | `infra/bin/put-secret.ts` | Storing the master seed safely |
 | `infra/README.md` | The deploy runbook |
+
+---
+
+### F28 — Deploying it for real, and the four things that only fail in production
+
+**What it does.** Nothing new. This entry records what the first real deploy found, because
+every one of these passed locally and every one of them was invisible until the deploy ran.
+
+**1. `pnpm deploy` is a pnpm builtin.** The documented command —
+`pnpm --filter @clawroll/infra deploy` — never ran the deploy script at all. pnpm's own
+`deploy` subcommand (which copies a workspace package to a directory) shadowed it, and the
+error was `ERR_PNPM_INVALID_DEPLOY_TARGET: This command requires one parameter`, which says
+nothing about shadowing. Renamed to `deploy:all`, which cannot collide. A runbook that has
+never been executed is a draft.
+
+**2. The Docker build carried a package's source without its dependencies.** The deps stage
+hand-lists which manifests to copy; the build stage copied `packages/` wholesale. When
+`packages/sdk-ts` was added, it landed in the second list automatically and the first not at
+all — so its source arrived with no `node_modules` and the typecheck gate failed on a missing
+`@clawroll/protocol`. Two lists that had to agree, one of them implicit. The build stage now
+names the same packages, so a future mismatch surfaces as a missing import rather than as a
+half-installed package.
+
+The `--filter '!@clawroll/web'` on the typecheck went with it. pnpm enumerates the workspace
+by which directories are present, and `web` was never copied — an exclusion filter naming an
+absent package reads as though it were there, which is part of why the gap stayed invisible.
+
+**3. Registration was impossible against the deployed room.** Covered in the runbook, but it
+belongs in this list: the database is in isolated subnets and the seed lives in one place, so
+the CLI had no route in. The room would have come up healthy, served an empty table forever,
+and nobody could have sat down. Nothing would have errored.
+
+**4. The registration output named the wrong address to fund.** It labelled the associated
+token account as the "deposit address" and pointed at the Circle faucet. A faucet takes an
+*owner* address and derives the ATA itself; give it an ATA and it derives the ATA of the ATA —
+a real, different, empty account nothing watches. The transfer confirms, the explorer shows it
+landed, and the deposit is never credited.
+
+**The pattern worth keeping.** Three of these four fail *silently*: nothing throws, nothing
+logs, and every visible signal says success. They were found by executing the runbook rather
+than by reading it, which is the only thing that finds this class of problem — a test suite
+cannot fail on an instruction in a markdown file.
