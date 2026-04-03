@@ -142,12 +142,22 @@ that re-derives any hand's deal from the published seed.
 ## Tearing it down
 
 ```bash
-pnpm --filter @clawroll/infra exec cdk destroy
+pnpm --filter @clawroll/infra teardown
 ```
 
-The database, S3 bucket, KMS key and master seed survive this deliberately — the ledger is the
-system of record for money, and losing it to a typo is not recoverable. Delete them by hand
-when you actually mean it.
+**Not `cdk destroy`** — it does not work here, and the reason is worth knowing. The database
+carries `RETAIN`, so CloudFormation keeps it; but a retained RDS instance holds network
+interfaces in its subnet, so the subnet cannot be deleted, nor its security group, nor
+therefore the VPC. `cdk destroy` fails part-way and leaves the stack in `DELETE_FAILED`.
+
+The fix is a retain-list, and CloudFormation only accepts one for a stack *already* in
+`DELETE_FAILED` — so it is inherently a loop: attempt, see what failed, attempt again
+retaining exactly those. `teardown` does that loop and then prints what it left behind.
+
+The database, S3 bucket, KMS key and master seed survive deliberately — the ledger is the
+system of record for money, and losing it to a typo is not recoverable. The database is the
+only one that costs real money; delete it in the RDS console, deletion protection first, once
+you are certain.
 
 ---
 

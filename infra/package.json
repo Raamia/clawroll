@@ -14,7 +14,8 @@
     "deploy:stack": "cdk deploy",
     "put-secret": "tsx bin/put-secret.ts",
     "gen-mnemonic": "tsx bin/gen-mnemonic.ts",
-    "register-agent": "tsx bin/register-agent.ts"
+    "register-agent": "tsx bin/register-agent.ts",
+    "teardown": "tsx bin/teardown.ts"
   },
   "dependencies": {
     "@aws-sdk/client-cloudformation": "^3.700.0",
