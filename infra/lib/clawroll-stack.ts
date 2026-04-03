@@ -186,7 +186,16 @@ export class ClawrollStack extends Stack {
       },
       // A rolling deploy that fails should stop and roll back rather than cycle forever.
       circuitBreaker: { rollback: true },
-      healthCheckGracePeriod: Duration.seconds(60),
+      // Three minutes, not one.
+      //
+      // The engine runs database migrations before it binds a port, and on a first deploy it
+      // is doing that against a brand-new RDS instance. With a 60s grace period and a health
+      // check needing two passes 30s apart, the task had to boot, migrate and answer inside
+      // the same 60 seconds or ECS would kill it — and the circuit breaker turns that into a
+      // rollback of the whole stack, twenty minutes of it. The grace period only delays
+      // enforcement at startup, so widening it costs nothing and removes a race that is worst
+      // on exactly the deploy where the database is coldest.
+      healthCheckGracePeriod: Duration.seconds(180),
 
       // Stop the old task before starting the new one, rather than the default overlap.
       //
@@ -206,7 +215,11 @@ export class ClawrollStack extends Stack {
       path: '/healthz',
       healthyThresholdCount: 2,
       unhealthyThresholdCount: 5,
-      interval: Duration.seconds(30),
+      // 15s rather than 30s, so two consecutive passes take 30 seconds instead of a minute.
+      // `/healthz` deliberately touches nothing — it does not query the table or the database
+      // — so checking twice as often costs nothing and halves how long a healthy task spends
+      // being treated as unhealthy.
+      interval: Duration.seconds(15),
       timeout: Duration.seconds(5),
     });
 
