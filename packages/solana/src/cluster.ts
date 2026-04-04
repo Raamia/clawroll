@@ -52,6 +52,20 @@ export const MICROS_PER_USDC = 10 ** USDC_DECIMALS;
 
 export class WrongClusterError extends Error {}
 
+/**
+ * The cluster could not be identified — the endpoint did not answer.
+ *
+ * Kept distinct from `WrongClusterError` because the two demand opposite responses. Being on
+ * the wrong chain is a configuration error: it will not fix itself, and a process that keeps
+ * retrying is a process nobody looks at. Being unable to *reach* the endpoint is usually
+ * transient, and treating it as fatal means a momentary blip during a deploy takes down a
+ * service — and, with an ECS circuit breaker watching, rolls back the whole stack.
+ *
+ * Neither one ever permits proceeding unverified. That is the property being protected, and
+ * it is not what the distinction is about.
+ */
+export class ClusterUnreachableError extends Error {}
+
 /** Identify a cluster from its genesis hash, or `null` if it is not one we know. */
 export function clusterFromGenesisHash(hash: string): ClusterName | null {
   for (const [name, known] of Object.entries(GENESIS_HASHES) as [ClusterName, string][]) {
@@ -72,9 +86,9 @@ export async function assertDevnet(connection: Connection): Promise<void> {
   try {
     hash = await connection.getGenesisHash();
   } catch (error) {
-    throw new WrongClusterError(
+    throw new ClusterUnreachableError(
       `could not verify the Solana cluster: ${(error as Error).message}. ` +
-        'Refusing to start rather than assume.',
+        'Refusing to continue rather than assume.',
     );
   }
 

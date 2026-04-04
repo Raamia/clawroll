@@ -14,7 +14,12 @@
 
 import { Connection, Keypair } from '@solana/web3.js';
 import { Ledger, createSql, migrate } from '@clawroll/db';
-import { assertDevnet, deriveKeypair, masterSeedFromMnemonic } from '@clawroll/solana';
+import {
+  ClusterUnreachableError,
+  assertDevnet,
+  deriveKeypair,
+  masterSeedFromMnemonic,
+} from '@clawroll/solana';
 import { RpcGateway } from '@clawroll/solana';
 import { DepositScanner } from './scanner.js';
 import { SolanaWithdrawalGateway } from './solana-gateway.js';
@@ -94,7 +99,23 @@ async function main(): Promise<void> {
 
   // Before anything touches a key. The genesis hash is checked, not the URL — see
   // `@clawroll/solana`. An unreachable RPC fails closed rather than being assumed fine.
-  await assertDevnet(connection);
+  //
+  // Retried, but only when the endpoint did not answer. A momentary blip during a deploy
+  // would otherwise exit the process, and with an ECS circuit breaker watching, that is not
+  // a restart — it is a rollback of the entire stack. Being on the *wrong* chain is the
+  // opposite case: it will not fix itself and must stop the deploy, so it is left to throw.
+  //
+  // Neither path ever proceeds unverified, which is the property that matters.
+  for (;;) {
+    try {
+      await assertDevnet(connection);
+      break;
+    } catch (error) {
+      if (!(error instanceof ClusterUnreachableError)) throw error;
+      console.error(`[clawroll] ${(error as Error).message} Retrying in 10s.`);
+      await new Promise((r) => setTimeout(r, 10_000));
+    }
+  }
   console.log(`[clawroll] cluster verified as devnet via ${rpcUrl}`);
 
   // The whole custody position. Never written to disk or logged.

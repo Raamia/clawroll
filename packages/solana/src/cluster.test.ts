@@ -5,6 +5,7 @@ import {
   DEVNET_USDC_MINT,
   GENESIS_HASHES,
   MICROS_PER_USDC,
+  ClusterUnreachableError,
   WrongClusterError,
   assertDevnet,
   clusterFromGenesisHash,
@@ -48,12 +49,36 @@ describe('the devnet guard', () => {
     );
   });
 
-  it('refuses to start when the cluster cannot be verified at all', async () => {
+  it('refuses to continue when the cluster cannot be verified at all', async () => {
     // An unreachable RPC must not be treated as "probably fine". Failing closed is the
     // only safe reading when the question is "is this real money?".
     await expect(
       assertDevnet(connectionReporting(new Error('ECONNREFUSED'))),
-    ).rejects.toThrow(/Refusing to start rather than assume/);
+    ).rejects.toThrow(/Refusing to continue rather than assume/);
+  });
+
+  it('distinguishes an unreachable endpoint from the wrong chain', async () => {
+    // The two demand opposite responses from a caller. Being on the wrong chain is a
+    // configuration error that will not fix itself and must stop a deploy. Being unable to
+    // reach the endpoint is usually a blip, and treating it as fatal means a momentary
+    // network hiccup takes a service down — which, with an ECS circuit breaker watching,
+    // rolls back an entire stack. The wallet worker retries one and not the other, and it
+    // can only do that if they are different types.
+    //
+    // Neither ever permits proceeding unverified; both still reject. That is the property
+    // this pair of assertions is protecting, and the distinction does not weaken it.
+    await expect(
+      assertDevnet(connectionReporting(new Error('ECONNREFUSED'))),
+    ).rejects.toThrow(ClusterUnreachableError);
+
+    await expect(
+      assertDevnet(connectionReporting(GENESIS_HASHES['mainnet-beta'])),
+    ).rejects.toThrow(WrongClusterError);
+
+    // And not each other's, so a caller's `instanceof` check cannot quietly match both.
+    await expect(
+      assertDevnet(connectionReporting(new Error('ECONNREFUSED'))),
+    ).rejects.not.toThrow(WrongClusterError);
   });
 
   it('identifies each known cluster by hash', () => {
