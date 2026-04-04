@@ -158,6 +158,16 @@ export class ClawrollStack extends Stack {
       buildArgs: { SERVICE: 'engine' },
     });
 
+    // Tasks per service. `-c desiredCount=0` deploys the stack with both services scaled to
+    // zero, which exists for one reason: an ECS deployment circuit breaker rolls the whole
+    // stack back when a task will not start, and the rollback deletes the cluster and the log
+    // groups along with it — destroying the only evidence of why. Deploying at zero, then
+    // launching a single task by hand, keeps the failure readable.
+    //
+    // Defaults to 1, so this is a diagnostic escape hatch and not a mode anyone lands in by
+    // accident.
+    const desiredCount = Number(this.node.tryGetContext('desiredCount') ?? 1);
+
     const commonEnvironment = {
       NODE_ENV: 'production',
       SOLANA_RPC_URL: props.solanaRpcUrl ?? 'https://api.devnet.solana.com',
@@ -169,7 +179,7 @@ export class ClawrollStack extends Stack {
       memoryLimitMiB: 1024,
       // One task. The runtime holds a table in memory, so a second task would own a
       // different copy of the same table. See the note at the top of this file.
-      desiredCount: 1,
+      desiredCount,
       publicLoadBalancer: true,
       taskSubnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
       taskImageOptions: {
@@ -232,7 +242,10 @@ export class ClawrollStack extends Stack {
     // output by name.
     const workerLogs = new logs.LogGroup(this, 'WalletWorkerLogs', {
       retention: logs.RetentionDays.ONE_MONTH,
-      removalPolicy: RemovalPolicy.DESTROY,
+      // Retained rather than destroyed. A failed deploy rolls back and takes the log group
+      // with it, deleting the only explanation of why the task would not start — which is
+      // exactly when the logs are worth having. A month of retention bounds the cost.
+      removalPolicy: RemovalPolicy.RETAIN,
     });
 
     const workerTask = new ecs.FargateTaskDefinition(this, 'WalletWorkerTask', {
@@ -265,7 +278,7 @@ export class ClawrollStack extends Stack {
 
     const worker = new ecs.FargateService(this, 'WalletWorker', {
       cluster,
-      desiredCount: 1,
+      desiredCount,
       vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
       circuitBreaker: { rollback: true },
 
@@ -287,6 +300,7 @@ export class ClawrollStack extends Stack {
     // task role needs read access to the secret and to the key it is encrypted under.
     masterSeed.grantRead(workerTask.taskRole);
     key.grantDecrypt(workerTask.taskRole);
+
 
     database.connections.allowDefaultPortFrom(engine.service, 'engine');
     database.connections.allowDefaultPortFrom(worker, 'wallet worker');
