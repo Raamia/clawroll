@@ -100,6 +100,17 @@ async function main(): Promise<void> {
 
   const retained = new Set<string>();
 
+  // If the stack is already in DELETE_FAILED, the resources that blocked the previous
+  // attempt are known before doing anything — so seed the retain-list from them rather than
+  // spending a pass rediscovering it. Each wasted pass is several minutes of waiting for
+  // CloudFormation to fail in exactly the way it already failed.
+  if (current === 'DELETE_FAILED') {
+    for (const id of await failedResources()) retained.add(id);
+    if (retained.size > 0) {
+      console.log(`already failed on: ${[...retained].join(', ')}`);
+    }
+  }
+
   // Bounded rather than `while (true)`: if a pass ever fails to make progress, looping
   // forever hides that far worse than stopping and saying so.
   for (let pass = 1; pass <= 6; pass++) {
