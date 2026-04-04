@@ -31,7 +31,6 @@
 import {
   CloudFormationClient,
   DeleteStackCommand,
-  DescribeStackEventsCommand,
   DescribeStackResourcesCommand,
   DescribeStacksCommand,
 } from '@aws-sdk/client-cloudformation';
@@ -61,21 +60,23 @@ async function waitForTerminal(): Promise<string> {
   }
 }
 
-/** Logical ids that failed to delete on the most recent attempt. */
+/**
+ * Logical ids currently stuck in `DELETE_FAILED`.
+ *
+ * Read from the resource list rather than scraped from the event stream. Events were the
+ * obvious source and produced a retain-list containing `Clawroll` — the stack's own logical
+ * id, which also emits a `DELETE_FAILED` event — and CloudFormation rejects the whole call
+ * when asked to retain the stack itself. The resource list carries each resource's *current*
+ * status, so there is no window to misread and nothing to filter after the fact.
+ */
 async function failedResources(): Promise<string[]> {
-  const events = await client.send(new DescribeStackEventsCommand({ StackName: STACK }));
-  const failed = new Set<string>();
-  for (const event of events.StackEvents ?? []) {
-    // Newest first. Stop at the start of the current delete so an older attempt's failures
-    // are not carried forward — they may well delete fine this time.
-    if (event.ResourceType === 'AWS::CloudFormation::Stack' && event.ResourceStatus === 'DELETE_IN_PROGRESS') {
-      break;
-    }
-    if (event.ResourceStatus === 'DELETE_FAILED' && event.LogicalResourceId) {
-      failed.add(event.LogicalResourceId);
-    }
-  }
-  return [...failed];
+  const r = await client.send(new DescribeStackResourcesCommand({ StackName: STACK }));
+  return (r.StackResources ?? [])
+    .filter((x) => x.ResourceStatus === 'DELETE_FAILED')
+    // Belt and braces: a nested stack could legitimately appear here, and retaining one is
+    // still not a thing CloudFormation accepts.
+    .filter((x) => x.ResourceType !== 'AWS::CloudFormation::Stack')
+    .flatMap((x) => (x.LogicalResourceId ? [x.LogicalResourceId] : []));
 }
 
 async function survivors(): Promise<{ type: string; id: string }[]> {
