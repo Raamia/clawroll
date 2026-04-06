@@ -28,6 +28,10 @@ export default [
         'apps/engine/src/server.test.ts',
         'apps/engine/src/bots/**/*.test.ts',
         'apps/wallet-worker/src/solana-gateway.test.ts',
+        // Reads environment variables and builds a string. It lives in packages/db but
+        // touches no database, so serialising it with the suites that do would be pure
+        // wall-clock for nothing.
+        'packages/db/src/client.test.ts',
       ],
       pool: 'threads',
     },
@@ -37,6 +41,7 @@ export default [
       name: 'database',
       include: [
         'packages/db/src/**/*.test.ts',
+        '!packages/db/src/client.test.ts',
         'packages/sdk-ts/src/**/*.test.ts',
         'apps/engine/src/bankroll.test.ts',
         'apps/engine/src/wired.test.ts',

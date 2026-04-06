@@ -166,7 +166,30 @@ export class ClawrollStack extends Stack {
     //
     // Defaults to 1, so this is a diagnostic escape hatch and not a mode anyone lands in by
     // accident.
-    const desiredCount = Number(this.node.tryGetContext('desiredCount') ?? 1);
+    // Applies to the wallet worker only. `ApplicationLoadBalancedFargateService` rejects a
+    // desiredCount of 0 outright — and the engine is not the service that has been failing:
+    // it has only ever been reported "cancelled", which is CloudFormation abandoning it
+    // because the worker failed first, not a failure of its own.
+    const workerDesiredCount = Number(this.node.tryGetContext('desiredCount') ?? 1);
+
+    // The five fields an RDS-generated secret actually contains, injected individually.
+    //
+    // There is no `uri` key in an RDS secret — it holds `username`, `password`, `host`,
+    // `port` and `dbname`. Asking ECS for `uri` is not a silent no-op: the agent fails with
+    // `ResourceInitializationError: retrieved secret from Secrets Manager did not contain
+    // json key uri` *before* starting the container, so nothing reaches the application log
+    // and the service simply never starts. Three deploys died on this, and with no logs at
+    // all the cause looked like anything but a wrong field name.
+    //
+    // `@clawroll/db` joins them back into a URL, percent-encoding the password, which is the
+    // one part that can legitimately contain characters a URL treats as structure.
+    const databaseSecrets = {
+      DB_USERNAME: ecs.Secret.fromSecretsManager(database.secret!, 'username'),
+      DB_PASSWORD: ecs.Secret.fromSecretsManager(database.secret!, 'password'),
+      DB_HOST: ecs.Secret.fromSecretsManager(database.secret!, 'host'),
+      DB_PORT: ecs.Secret.fromSecretsManager(database.secret!, 'port'),
+      DB_NAME: ecs.Secret.fromSecretsManager(database.secret!, 'dbname'),
+    };
 
     const commonEnvironment = {
       NODE_ENV: 'production',
@@ -179,16 +202,14 @@ export class ClawrollStack extends Stack {
       memoryLimitMiB: 1024,
       // One task. The runtime holds a table in memory, so a second task would own a
       // different copy of the same table. See the note at the top of this file.
-      desiredCount,
+      desiredCount: 1,
       publicLoadBalancer: true,
       taskSubnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
       taskImageOptions: {
         image,
         containerPort: 8080,
         environment: commonEnvironment,
-        secrets: {
-          DATABASE_URL: ecs.Secret.fromSecretsManager(database.secret!, 'uri'),
-        },
+        secrets: databaseSecrets,
         logDriver: ecs.LogDrivers.awsLogs({
           streamPrefix: 'engine',
           logRetention: logs.RetentionDays.ONE_MONTH,
@@ -270,15 +291,13 @@ export class ClawrollStack extends Stack {
       // a failure to launch, so the deploy completes and the operator populates the secret
       // afterwards with no redeploy.
       environment: { ...commonEnvironment, MASTER_SEED_SECRET_ARN: masterSeedResource.ref },
-      secrets: {
-        DATABASE_URL: ecs.Secret.fromSecretsManager(database.secret!, 'uri'),
-      },
+      secrets: databaseSecrets,
       logging: ecs.LogDrivers.awsLogs({ streamPrefix: 'wallet-worker', logGroup: workerLogs }),
     });
 
     const worker = new ecs.FargateService(this, 'WalletWorker', {
       cluster,
-      desiredCount,
+      desiredCount: workerDesiredCount,
       vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
       circuitBreaker: { rollback: true },
 
