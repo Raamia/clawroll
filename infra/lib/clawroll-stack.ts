@@ -200,6 +200,20 @@ export class ClawrollStack extends Stack {
       cluster,
       cpu: 512,
       memoryLimitMiB: 1024,
+      // ARM64, matching the machine the image is built on.
+      //
+      // Fargate defaults to X86_64. An image built on an Apple Silicon Mac is arm64, and the
+      // mismatch does not fail at push or at pull — it fails at exec, with
+      // `exec /sbin/tini: exec format error` and nothing else, because the entrypoint binary
+      // itself cannot run. The container "starts" and dies instantly, the circuit breaker
+      // trips, and the stack rolls back. It is invisible locally, where the image runs on the
+      // architecture it was built for.
+      //
+      // Pinning ARM64 rather than forcing an amd64 build: Graviton Fargate is cheaper, the
+      // database is already `t4g` (also Graviton), and building for the host architecture
+      // avoids emulation on every deploy. The cost is that an amd64 CI machine would have to
+      // cross-build — worth stating, since the failure it produces names none of this.
+      runtimePlatform: { cpuArchitecture: ecs.CpuArchitecture.ARM64 },
       // One task. The runtime holds a table in memory, so a second task would own a
       // different copy of the same table. See the note at the top of this file.
       desiredCount: 1,
@@ -272,6 +286,8 @@ export class ClawrollStack extends Stack {
     const workerTask = new ecs.FargateTaskDefinition(this, 'WalletWorkerTask', {
       cpu: 256,
       memoryLimitMiB: 512,
+      // Same architecture as the engine, for the same reason — see above.
+      runtimePlatform: { cpuArchitecture: ecs.CpuArchitecture.ARM64 },
     });
     workerTask.addContainer('worker', {
       image: ecs.ContainerImage.fromAsset('..', {
