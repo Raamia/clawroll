@@ -14,6 +14,7 @@
 
 import { Connection, Keypair } from '@solana/web3.js';
 import { Ledger, createSql, migrate } from '@clawroll/db';
+import { loadMasterMnemonic } from './master-seed.js';
 import {
   ClusterUnreachableError,
   assertDevnet,
@@ -36,62 +37,6 @@ function number(name: string, fallback: number): number {
   return parsed;
 }
 
-/**
- * Get the master mnemonic, waiting for it if it is not there yet.
- *
- * ## Why this is not an injected environment variable in production
- *
- * It was, and that made the stack impossible to deploy. ECS resolves secrets *before* it
- * starts the container, and the master seed secret is created deliberately empty — its ARN
- * does not exist until the deploy that creates it has finished. So the worker could never
- * start on a first deploy, its deployment circuit breaker tripped, and CloudFormation rolled
- * the entire stack back. A genuine circular dependency: the deploy needed the secret, and the
- * secret needed the deploy.
- *
- * Fetching it here instead breaks the cycle. The container starts regardless, and an unset
- * seed becomes a normal waiting state rather than a failure to launch — so the deploy
- * completes, the operator populates the secret, and the worker picks it up on its next check
- * with no redeploy and no scaling dance.
- *
- * `SOLANA_MASTER_MNEMONIC` still wins when present, which is what local development and the
- * registration task use. The secret is only consulted when there is an ARN and no env var.
- */
-async function loadMasterMnemonic(): Promise<string> {
-  const direct = process.env['SOLANA_MASTER_MNEMONIC'];
-  if (direct) return direct;
-
-  const secretArn = process.env['MASTER_SEED_SECRET_ARN'];
-  if (!secretArn) {
-    throw new Error('either SOLANA_MASTER_MNEMONIC or MASTER_SEED_SECRET_ARN must be set');
-  }
-
-  // Imported lazily so local development and tests never load the AWS SDK at all.
-  const { SecretsManagerClient, GetSecretValueCommand } = await import(
-    '@aws-sdk/client-secrets-manager'
-  );
-  const client = new SecretsManagerClient({});
-
-  for (let attempt = 0; ; attempt++) {
-    try {
-      const { SecretString } = await client.send(
-        new GetSecretValueCommand({ SecretId: secretArn }),
-      );
-      if (SecretString && SecretString.trim() !== '') return SecretString;
-    } catch (error) {
-      // A secret with no version raises ResourceNotFoundException, which is exactly the
-      // fresh-stack state — not an error worth crashing over. Anything else is.
-      if ((error as { name?: string }).name !== 'ResourceNotFoundException') throw error;
-    }
-
-    // Logged every time, not once: a worker idling for a reason nobody can see looks
-    // identical to a worker that is wedged.
-    console.log(
-      `[clawroll] master seed not set yet (attempt ${attempt + 1}). Waiting. ` +
-        `Populate it with: pnpm --filter @clawroll/infra put-secret ${secretArn}`,
-    );
-    await new Promise((r) => setTimeout(r, 15_000));
-  }
-}
 
 async function main(): Promise<void> {
   const rpcUrl = process.env['SOLANA_RPC_URL'] ?? 'https://api.devnet.solana.com';
@@ -119,7 +64,7 @@ async function main(): Promise<void> {
   console.log(`[clawroll] cluster verified as devnet via ${rpcUrl}`);
 
   // The whole custody position. Never written to disk or logged.
-  const masterSeed = masterSeedFromMnemonic(await loadMasterMnemonic());
+  const masterSeed = masterSeedFromMnemonic(await loadMasterMnemonic({ wait: true }));
   const treasury: Keypair = deriveKeypair(masterSeed, TREASURY_INDEX);
   console.log(`[clawroll] treasury ${treasury.publicKey.toBase58()}`);
 

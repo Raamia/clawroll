@@ -20,6 +20,7 @@ import { Keypair } from '@solana/web3.js';
 import { createSql, migrate } from '@clawroll/db';
 import { deriveDepositAccount, masterSeedFromMnemonic } from '@clawroll/solana';
 import { issueKey } from '@clawroll/engine';
+import { loadMasterMnemonic } from './master-seed.js';
 
 async function main(): Promise<void> {
   const displayName = process.argv[2];
@@ -28,12 +29,12 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  const mnemonic = process.env['SOLANA_MASTER_MNEMONIC'];
-  if (!mnemonic) {
-    console.error('SOLANA_MASTER_MNEMONIC must be set');
-    process.exit(1);
-  }
-  const masterSeed = masterSeedFromMnemonic(mnemonic);
+  // The same loader the worker uses. Reading SOLANA_MASTER_MNEMONIC directly worked only
+  // while the task definition still injected it; once the worker began fetching the secret
+  // itself, nothing set that variable and this failed with "must be set" on a stack where the
+  // seed was in fact set. `wait: false` because a one-shot command should say what is wrong
+  // and exit, not hang until someone kills the task.
+  const masterSeed = masterSeedFromMnemonic(await loadMasterMnemonic({ wait: false }));
 
   const sql = createSql();
   await migrate(sql);
