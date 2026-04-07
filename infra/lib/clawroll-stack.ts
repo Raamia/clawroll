@@ -351,19 +351,61 @@ export class ClawrollStack extends Stack {
       removalPolicy: RemovalPolicy.RETAIN,
     });
 
+    // The engine, reachable through the same distribution as the site.
+    //
+    // Without this the deployed spectator app cannot talk to the engine at all, and it fails
+    // in two ways at once. The page is served over HTTPS from CloudFront, so a browser
+    // refuses the `ws://` socket as mixed content — and the app's `/api` calls are relative,
+    // so they land on CloudFront, which only knows about the S3 bucket, and 404.
+    //
+    // Routing both through CloudFront fixes both and needs no domain and no certificate on
+    // the load balancer: the viewer gets `https` and `wss` terminated at the edge, and
+    // CloudFront speaks plain HTTP to the ALB inside AWS. A real certificate on the ALB is
+    // still worth having — the *agent* WebSocket connects to it directly and is still
+    // unencrypted — but that needs a domain, and this does not.
+    const engineOrigin = new origins.LoadBalancerV2Origin(engine.loadBalancer, {
+      protocolPolicy: cloudfront.OriginProtocolPolicy.HTTP_ONLY,
+      // Agents and spectators hold a socket open for a whole session.
+      readTimeout: Duration.seconds(60),
+      keepaliveTimeout: Duration.seconds(60),
+    });
+
+    const engineBehavior: cloudfront.BehaviorOptions = {
+      origin: engineOrigin,
+      viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
+      // A cached API response on a live poker table would be worse than useless.
+      cachePolicy: cloudfront.CachePolicy.CACHING_DISABLED,
+      // Forwards the `Upgrade` and `Connection` headers the WebSocket handshake needs, along
+      // with query strings. Without it the handshake is stripped at the edge and the socket
+      // silently degrades to a plain request that never upgrades.
+      originRequestPolicy: cloudfront.OriginRequestPolicy.ALL_VIEWER,
+      allowedMethods: cloudfront.AllowedMethods.ALLOW_ALL,
+    };
+
     const distribution = new cloudfront.Distribution(this, 'Site', {
       defaultBehavior: {
         origin: origins.S3BucketOrigin.withOriginAccessControl(siteBucket),
         viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
       },
+      additionalBehaviors: {
+        '/api/*': engineBehavior,
+        '/spectate': engineBehavior,
+        '/healthz': engineBehavior,
+      },
       defaultRootObject: 'index.html',
-      // The SPA uses hash routing precisely so this is all that is needed — no rewrite
-      // rules, no Lambda@Edge. A deep link to a hand replay resolves to index.html and the
-      // fragment does the rest.
-      errorResponses: [
-        { httpStatus: 403, responseHttpStatus: 200, responsePagePath: '/index.html' },
-        { httpStatus: 404, responseHttpStatus: 200, responsePagePath: '/index.html' },
-      ],
+      // No error-response rewrites, deliberately.
+      //
+      // They used to map 403 and 404 to index.html as SPA-routing insurance. That was
+      // harmless while CloudFront only fronted S3 and is actively wrong now that the API is
+      // behind the same distribution: CloudFront applies custom error responses across
+      // *every* behaviour, so `GET /api/agents/nobody` would answer 200 with a page of HTML
+      // instead of the 404 the endpoint deliberately returns. A client cannot distinguish
+      // "no such agent" from "here is the homepage" — and the agent profile page depends on
+      // exactly that distinction.
+      //
+      // They were never needed anyway: the SPA uses hash routing, so a deep link to a hand
+      // replay requests `/` and lets the fragment do the rest. There is no path for S3 to
+      // miss.
     });
 
     // -----------------------------------------------------------------------
