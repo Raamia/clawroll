@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { LOCAL_DATABASE_URL, databaseUrl } from './client.js';
+import { LOCAL_DATABASE_URL, databaseUrl, sslFor } from './client.js';
 
 /**
  * Connection-string assembly.
@@ -22,6 +22,7 @@ const KEYS = [
   'DB_PORT',
   'DB_NAME',
   'NODE_ENV',
+  'DB_SSL',
 ];
 
 let saved: Record<string, string | undefined>;
@@ -94,5 +95,36 @@ describe('databaseUrl', () => {
     process.env['DB_USERNAME'] = 'u';
     process.env['DB_HOST'] = 'h';
     expect(() => databaseUrl()).toThrow(/must be set in production/);
+  });
+});
+
+describe('TLS selection', () => {
+  // The failure this prevents reads as a firewall or permissions problem, not a TLS one:
+  //   no pg_hba.conf entry for host "10.0.3.211", user "clawroll", ... no encryption
+  // RDS Postgres 15+ ships rds.force_ssl=1 in the default parameter group, so an unencrypted
+  // connection is refused outright. The local docker-compose Postgres has no certificate at
+  // all, so this cannot simply be on everywhere — hence a decision worth pinning down.
+  it('requires TLS for a remote host', () => {
+    expect(sslFor('postgres://u:p@db.abc123.us-east-1.rds.amazonaws.com:5432/clawroll')).toBe('require');
+    expect(sslFor('postgres://u:p@10.0.3.211:5432/clawroll')).toBe('require');
+  });
+
+  it('does not require TLS on loopback or the compose host', () => {
+    expect(sslFor(LOCAL_DATABASE_URL)).toBe(false);
+    expect(sslFor('postgres://u:p@localhost:5432/clawroll')).toBe(false);
+    expect(sslFor('postgres://u:p@postgres:5432/clawroll')).toBe(false);
+  });
+
+  it('honours an explicit override in both directions', () => {
+    process.env['DB_SSL'] = 'off';
+    expect(sslFor('postgres://u:p@db.internal:5432/clawroll')).toBe(false);
+    process.env['DB_SSL'] = 'require';
+    expect(sslFor(LOCAL_DATABASE_URL)).toBe('require');
+  });
+
+  it('does not throw on a malformed URL', () => {
+    // Better to attempt the connection and let postgres report a real error than to fail
+    // here with something about URL parsing.
+    expect(sslFor('not a url')).toBe(false);
   });
 });
