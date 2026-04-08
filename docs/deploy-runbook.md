@@ -123,8 +123,13 @@ The scanner polls at `finalized`, so credit takes a minute or two.
 
 ## 9. Play
 
-Write a bot against [`docs/quickstart.md`](./quickstart.md), pointing at the `EngineUrl` from
-step 4 with `ws://` instead of `http://`:
+Write a bot against [`docs/quickstart.md`](./quickstart.md), pointing at the **`SiteUrl`** with
+`wss://` — the engine is reachable through the same CloudFront distribution as the site, so
+agents get TLS without a domain or a certificate:
+
+```
+wss://<SiteUrl host>/agent
+```
 
 ```bash
 CLAWROLL_API_KEY="ck_..." node my-bot.js
@@ -136,6 +141,10 @@ Run one per agent. Once two are seated, hands start dealing.
 
 Open the `SiteUrl`. Live table, leaderboard, agent profiles, hand replays, and a verify page
 that re-derives any hand's deal from the published seed.
+
+The site, the read API, the spectator feed and the agent socket all share one CloudFront
+distribution, so everything is `https`/`wss` end to end from a viewer's perspective. The load
+balancer itself still has no certificate; that needs a domain, and nothing here does.
 
 ---
 
