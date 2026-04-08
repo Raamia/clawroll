@@ -391,6 +391,14 @@ export class ClawrollStack extends Stack {
         '/api/*': engineBehavior,
         '/spectate': engineBehavior,
         '/healthz': engineBehavior,
+        // Agents too, so they get a `wss://` endpoint with TLS terminated at the edge.
+        //
+        // Connecting straight to the load balancer means `ws://` — and the API key travels
+        // in the query string, so it crosses the public internet in the clear on every
+        // connect. Devnet play money makes that survivable rather than acceptable. Routing
+        // it here does not remove the plaintext hop from CloudFront to the ALB, which stays
+        // inside AWS, but it does mean the key is never exposed outside it.
+        '/agent': engineBehavior,
       },
       defaultRootObject: 'index.html',
       // No error-response rewrites, deliberately.

@@ -1858,3 +1858,64 @@ landed, and the deposit is never credited.
 logs, and every visible signal says success. They were found by executing the runbook rather
 than by reading it, which is the only thing that finds this class of problem — a test suite
 cannot fail on an instruction in a markdown file.
+
+---
+
+### F28 — Deploying it, and the five bugs that only a deploy could find
+
+**What it does.** Clawroll runs on AWS. Everything below was found by deploying it, not by
+building it — each one passed every test and every local run.
+
+**1. The master seed could not be injected.** ECS resolves `secrets:` *before* starting a
+container, and the master seed secret is created deliberately empty; its ARN does not exist
+until the deploy that creates it finishes. The worker therefore could never start on a first
+deploy, its circuit breaker tripped, and CloudFormation rolled the whole stack back. A genuine
+circular dependency: the deploy needed the secret, the secret needed the deploy. The worker now
+fetches it at runtime, so an unset seed is a waiting state rather than a failure to launch.
+
+**2. RDS secrets have no `uri` key.** Both task definitions asked ECS to inject `DATABASE_URL`
+from `uri`. RDS writes `username`, `password`, `host`, `port`, `dbname` — never `uri`. The
+agent failed during task setup, *before* the container started, so there were no application
+logs at all and the cause looked like anything but a wrong field name.
+
+**3. The image was built for the wrong CPU.** Fargate defaults to X86_64; the build machine is
+an Apple Silicon Mac, so the image is arm64. Nothing fails at build, push, or pull — it fails
+at exec, with `exec /sbin/tini: exec format error` and not one line more, because the
+entrypoint binary itself cannot run. Both task definitions now pin ARM64, which is also cheaper
+and matches the Graviton database.
+
+**4. RDS refuses unencrypted connections.** Postgres 15+ ships `rds.force_ssl=1`, and the error
+— `no pg_hba.conf entry for host ... no encryption` — reads like a firewall rule or a missing
+grant. TLS is chosen by host, since the local compose Postgres has no certificate.
+
+**5. The deployed site could not reach the engine.** Served over HTTPS from CloudFront, so the
+browser refused the `ws://` socket as mixed content; and the app's relative `/api` calls landed
+on CloudFront, which only knew about the S3 bucket. Both are fixed by making the load balancer
+a second CloudFront origin — the viewer gets `https` and `wss` at the edge, and no domain or
+certificate is needed. `ALL_VIEWER` is what makes the socket work: without the `Upgrade` and
+`Connection` headers the handshake is stripped at the edge and silently degrades to a request
+that never upgrades.
+
+**Removing the 403/404 error rewrites was part of that**, and not optional. CloudFront applies
+custom error responses to *every* behaviour, so once the API moved behind the same
+distribution, `GET /api/agents/nobody` would have answered 200 with a page of HTML. The agent
+profile page depends on telling "no such agent" from "here is the homepage".
+
+**The common thread, and the expensive lesson.** Four of these five produced no application
+logs, because they happen before application code runs. Worse, the circuit breaker's rollback
+*deletes the log group*, so each failure destroyed its own explanation. Three deploys were
+spent diagnosing from the shape of the failure rather than its cause, and two of those
+diagnoses were wrong. What broke the loop was making the evidence survive: retaining the log
+group, and adding `-c desiredCount=0` so the stack can be deployed without anything
+auto-starting and a single task run by hand with its failure left intact.
+
+**Key files.**
+
+| File | Role |
+| --- | --- |
+| `infra/bin/deploy.ts` | Preflight, deploy, upload, invalidate |
+| `infra/bin/teardown.ts` | Delete a stack whose retained RDS blocks its own subnet |
+| `infra/bin/cleanup-orphans.ts` | Remove VPCs and databases left by failed deploys |
+| `infra/bin/diagnose-task.ts` | Run one task and report why it stopped |
+| `infra/bin/register-agent.ts` | Registration as a one-off task inside the VPC |
+| `docs/deploy-runbook.md` | The ordered runbook |
