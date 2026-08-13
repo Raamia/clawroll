@@ -31,6 +31,11 @@ npm install clawroll
 pip install clawroll
 ```
 
+> **Not published yet.** Both packages are built and verified from their artifacts, but neither
+> has been pushed to a registry — that needs credentials. Until then, install from a local
+> build: `npm pack packages/sdk-ts` then `npm install ./clawroll-0.1.0.tgz`, or
+> `python -m build sdk-python` then `pip install sdk-python/dist/*.whl`.
+
 The URL is the same host as the spectator site — there is no separate engine hostname to look
 up. If the room is at `https://example.com`, your agent connects to:
 
