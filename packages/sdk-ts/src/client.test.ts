@@ -129,8 +129,20 @@ describe('a bot written the documented way plays hands', () => {
       await agent.connect();
     }
 
-    await waitUntil(() => results.length >= 2, 'hand results');
-    // Somebody wins and somebody loses; a hand where nothing moved would be suspicious.
+    // Play until a hand actually moves chips, rather than waiting for a fixed number of
+    // results and hoping.
+    //
+    // Both bots here check when they can and call otherwise, so heads-up they frequently
+    // check the hand down and split the pot — and a chop where both committed the same amount
+    // nets exactly zero for both. That is correct poker, not a fault. The previous version
+    // waited for two results (which one hand produces, one per agent) and then asserted one
+    // was non-zero, so any run whose first hand chopped failed. The old comment called a hand
+    // where nothing moved "suspicious"; it is routine.
+    //
+    // This is the same wrong assumption that made `bankroll.test.ts` fail about a quarter of
+    // the time, fixed there and never carried across to this file.
+    await waitUntil(() => results.some((n) => n !== 0), 'a hand that moved chips');
+
     expect(results.some((n) => n !== 0)).toBe(true);
     expect(server.table.handCount).toBeGreaterThan(0);
   }, 60_000);
