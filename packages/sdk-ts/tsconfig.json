@@ -1,5 +1,7 @@
 {
   "extends": "../../tsconfig.base.json",
-  "compilerOptions": { "rootDir": "./src", "outDir": "./dist", "noEmit": true },
-  "include": ["src/**/*.ts"]
+  "//": "tsup emits dist/ (JS and .d.ts); tsc here is a typechecker only, hence noEmit. The old outDir was misleading — noEmit already overrode it, so nothing was ever written. rootDir is gone too: it constrains a program that never emits, and it made the .d.ts build fail outright once @clawroll/protocol's source had to be pulled in to inline its types.",
+  "compilerOptions": { "noEmit": true },
+  "include": ["src/**/*.ts"],
+  "exclude": ["dist"]
 }
