@@ -1919,3 +1919,76 @@ auto-starting and a single task run by hand with its failure left intact.
 | `infra/bin/diagnose-task.ts` | Run one task and report why it stopped |
 | `infra/bin/register-agent.ts` | Registration as a one-off task inside the VPC |
 | `docs/deploy-runbook.md` | The ordered runbook |
+
+---
+
+### F29 — Making the SDKs installable
+
+**What it does.** `npm install clawroll` and `pip install clawroll` both work, so someone can
+write a bot without cloning this repo.
+
+**The barrier was not the one that got reported.** The complaint was that the quickstart never
+mentions the deployed `wss://` URL — true, and a two-line fix. The real problem was underneath
+it: `@clawroll/sdk` was `"private": true` with `main` pointing at `./src/index.ts` and no build
+step, so it could not be published and would not have loaded if it were. The quickstart's very
+first code sample resolved for exactly one person — someone who had already cloned the
+monorepo. "Bring your bot to my poker room" meant "clone my repo and write it inside."
+
+**`@clawroll/protocol` is bundled, not published alongside.** It is a genuine runtime
+dependency — `parseClientMessage` runs on every outbound frame — so it had to reach consumers
+somehow. Publishing it as a second package means versioning two things in step, and an SDK
+resolved against a mismatched protocol is a wire-format bug that surfaces as an unexplained
+rejection several hands in. Bundling makes that unrepresentable, and keeps the wire format an
+implementation detail: nobody writing a bot should be importing zod schemas.
+
+**Two failures the JavaScript build hid.** `noExternal` covers JS only, so the emitted `.d.ts`
+still imported `@clawroll/protocol` — the package would have run perfectly and failed to
+compile for every TypeScript user, which no plain-JS smoke test would catch. And even with
+`dts.resolve`, the three re-exported protocol types could not survive bundling: they are
+`z.infer` aliases, and inlining left an import of `./messages.js`, a file that does not exist
+in `dist`.
+
+**So the public types are declared outright — and then proved correct.** Hand-copying a wire
+format is how it goes stale, which is exactly why they were re-exported in the first place.
+`protocol-parity.ts` asserts in both directions that each declaration and its zod schema
+describe the same type, so drift becomes a compile error rather than an assumption. Verified by
+breaking it three ways — dropping a field, changing a type, adding an action — and confirming
+each fails on the right line. Stronger than the re-export it replaces.
+
+**Verification that meant anything was done from the artifacts.** Everything else can pass
+while a package is still repo-coupled. `npm pack`, install the tarball in a directory outside
+the repo, and check that ESM, CJS and a `strict` TypeScript consumer all work; build the wheel,
+install it into a fresh venv, import it. Reintroducing the old protocol import into the
+installed `.d.ts` makes the consumer typecheck fail with TS2307 and removing it makes it pass —
+so that check catches the bug it exists for.
+
+**Smaller things that only matter once strangers install it.** `pyproject.toml` had declared
+`license = { text = "MIT" }` for its whole life against no LICENSE file anywhere in the repo.
+`packages/sdk-ts` had no README, which is the npm package page. The Python wheel excluded the
+`examples/` its own README linked to. And the Python SDK had zero tests while independently
+reimplementing the clamping logic the TypeScript SDK covers — two implementations of the same
+rules, one unverified, is how they drift apart unnoticed.
+
+**A lesson that did not travel.** The TypeScript SDK's own suite had the same chopped-pot flake
+that `bankroll.test.ts` had: two check/call bots heads-up frequently split the pot, and a chop
+where both committed equally nets exactly zero. It waited for two results and asserted one was
+non-zero. Fixed once before, in another file, and never carried across.
+
+**Not done, and deliberately.** Publishing itself — that needs registry credentials. And
+self-service registration, which would remove the human bottleneck entirely but needs the
+registration/master-seed coupling broken first.
+
+**A note for later.** `ACTION_TIMEOUT_MS` is per-table configurable, so a table with a
+60-second clock aimed at LLM players is a small change. It would need its own leaderboard,
+since LLM play is not comparable to machine-speed play. Not built; written down while the
+reasoning is fresh.
+
+**Key files.**
+
+| File | Role |
+| --- | --- |
+| `packages/sdk-ts/tsup.config.ts` | The build, and why protocol is inlined |
+| `packages/sdk-ts/src/protocol-parity.ts` | Compile-time proof the public types match the wire |
+| `packages/sdk-ts/README.md` | The npm package page |
+| `sdk-python/tests/test_validation.py` | The Python SDK's first tests |
+| `examples/starter-bot/` | A bot to copy, outside the workspace on purpose |
