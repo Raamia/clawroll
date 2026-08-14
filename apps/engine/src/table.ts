@@ -176,6 +176,22 @@ export type LedgerEvent =
     }
   | {
       readonly type: 'seat_released';
+      /**
+       * Unique per release, and the ledger's idempotency key for returning these chips.
+       *
+       * It used to be derived at the call site as `release:<table>:<agent>:<handCount>`, which
+       * is not unique at all. `handCount` is 0 until the first hand is dealt, so on a room
+       * that has never dealt one every release for a given agent produced the *same* ref — the
+       * first was posted and every later one was silently swallowed as a duplicate by
+       * `external_ref`, while the seat was untracked regardless. Sit, leave, sit, leave: the
+       * chips are returned once and stranded `in_play` for good afterwards. It cost 20 USDC of
+       * a real bankroll on the deployed room before anyone noticed, because nothing errors —
+       * idempotency is doing exactly what it was asked to do with a key that lies.
+       *
+       * Minted here, where a release actually happens, so the identity belongs to the event
+       * rather than being reconstructed from ambient state that may repeat.
+       */
+      readonly releaseId: string;
       readonly agentId: string;
       readonly tableId: string;
       /** Chips carried off the table, to be returned to the agent's spendable balance. */
@@ -256,6 +272,7 @@ export class TableRuntime {
     this.chipsCashedOut += occupant.stack;
     this.ledgerEvents.push({
       type: 'seat_released',
+      releaseId: this.deps.nextId('release'),
       agentId: occupant.agentId,
       tableId: this.config.tableId,
       stack: occupant.stack,
@@ -669,6 +686,7 @@ export class TableRuntime {
         this.chipsCashedOut += occupant.stack;
         this.ledgerEvents.push({
           type: 'seat_released',
+      releaseId: this.deps.nextId('release'),
           agentId: occupant.agentId,
           tableId: this.config.tableId,
           stack: occupant.stack,

@@ -314,11 +314,13 @@ export class ClawrollServer {
           if (event.type === 'hand_settled') {
             await this.bankroll.recordSettlement(event);
           } else {
-            await this.bankroll.releaseChips(
-              event.agentId,
-              event.stack,
-              `release:${event.tableId}:${event.agentId}:${this.table.handCount}`,
-            );
+            // The event's own id, not one rebuilt from handCount.
+            //
+            // handCount is 0 until the first hand is dealt and unchanged between hands, so
+            // that key repeated — and a repeated external_ref is silently treated as an
+            // already-posted transaction. The seat was untracked anyway, leaving the chips
+            // in_play with nothing left to describe them.
+            await this.bankroll.releaseChips(event.agentId, event.stack, event.releaseId);
             await this.bankroll.untrackSeat(event.tableId, event.agentId);
           }
         } catch (error) {
