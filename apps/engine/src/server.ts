@@ -232,15 +232,20 @@ export class ClawrollServer {
   }
 
   async start(): Promise<number> {
-    // A crash leaves in_play balances with no table behind them: money the agent cannot
+    // A restart leaves in_play balances with no table behind them: money the agent cannot
     // spend and no table holds. Returning it before accepting connections means a
     // reconnecting agent sees a correct balance rather than a mysteriously missing one.
+    //
+    // Every seat is released, not only those at tables this process no longer serves. Seating
+    // lives in memory, so a process that has just started has nobody seated anywhere — see
+    // `reconcileAtStartup`. Passing the live table ids here exempted the common case and
+    // stranded real money on every deploy.
     if (this.bankroll) {
-      const reconciled = await this.bankroll.reconcileOrphanedChips([this.config.table.tableId]);
+      const reconciled = await this.bankroll.reconcileAtStartup();
       if (reconciled.agentsRestored > 0) {
         console.warn(
-          `[clawroll] returned ${reconciled.microsRestored} micro-USDC stranded at dead tables ` +
-            `for ${reconciled.agentsRestored} agent(s)`,
+          `[clawroll] returned ${reconciled.microsRestored} micro-USDC left seated by the ` +
+            `previous process for ${reconciled.agentsRestored} agent(s)`,
         );
       }
     }

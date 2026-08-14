@@ -353,3 +353,29 @@ describe('a real hand settles through to Postgres', () => {
     expect(await ledger.findNegativeAgentAccounts()).toEqual([]);
   });
 });
+
+describe('startup reconciliation', () => {
+  it('releases chips seated at a table that still exists', async () => {
+    // The bug this covers cost real money on the deployed room. Seating lives in memory, so a
+    // restarted engine has nobody seated — but `table_seats` still says otherwise, and the old
+    // startup path exempted any table it was still serving. An agent seated at `main` when the
+    // engine restarted kept an in_play balance that no table held and it could never spend,
+    // and deploys restart the engine, so it happened every time and never corrected itself.
+    const agentId = await fundedAgent(10_000_000);
+    await bankroll.reserveBuyIn(agentId, 'main', 6_000_000);
+    await bankroll.trackSeat('main', agentId, 0, 6_000_000);
+
+    expect(await ledger.balanceOfAgent(agentId, 'in_play')).toBe(6_000_000);
+
+    const result = await bankroll.reconcileAtStartup();
+
+    expect(result.agentsRestored).toBeGreaterThan(0);
+    expect(await ledger.balanceOfAgent(agentId, 'in_play')).toBe(0);
+    expect(await ledger.balanceOfAgent(agentId, 'available')).toBe(10_000_000);
+  });
+
+  it('is safe to run when nothing is seated', async () => {
+    const result = await bankroll.reconcileAtStartup();
+    expect(result.microsRestored).toBeGreaterThanOrEqual(0);
+  });
+});

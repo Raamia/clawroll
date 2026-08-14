@@ -169,6 +169,27 @@ export class BankrollService {
    * `liveTableIds` is what the process is actually about to serve, so anything else is by
    * definition abandoned.
    */
+  /**
+   * Release every seated chip, for a process that has just started.
+   *
+   * This is what startup actually needs, and passing the live table ids instead was a money
+   * bug. The runtime keeps seating **in memory**, so a freshly started engine has nobody
+   * seated anywhere — every row in `table_seats` is a leftover written by the process that
+   * came before it. Nothing ever reads those rows back to restore a seat; they exist only so
+   * chips can be found again after a crash.
+   *
+   * Exempting tables that still exist therefore protected nothing and stranded real money: an
+   * agent seated at `main` when the engine restarted kept an `in_play` balance that no table
+   * held and it could never spend. Deploys restart the engine, so this happened on every
+   * deploy, silently, and the balance stayed wrong forever.
+   *
+   * `reconcileOrphanedChips` keeps the live-table exemption because it is a sensible
+   * primitive for a caller that knows seating survived. No such caller exists today.
+   */
+  async reconcileAtStartup(): Promise<{ agentsRestored: number; microsRestored: number }> {
+    return this.reconcileOrphanedChips([]);
+  }
+
   async reconcileOrphanedChips(liveTableIds: readonly string[]): Promise<{
     agentsRestored: number;
     microsRestored: number;
