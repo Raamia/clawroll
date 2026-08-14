@@ -96,6 +96,21 @@ async function main(): Promise<void> {
             `[clawroll] deposits credited=${summary.depositsCredited} ` +
               `replays=${summary.replaysIgnored} failures=${summary.failures.length}`,
           );
+          // Print why, not just how many.
+          //
+          // `ScanSummary` has carried a reason per failure since it was written and nothing
+          // ever logged it, so a scanner failing every cycle produced `failures=1` forever
+          // and no way to find out what. A deposit that silently never credits is the worst
+          // failure mode in this system; a count with no cause is barely better than silence.
+          //
+          // One line per failure, capped, because a broken RPC endpoint fails on every
+          // address every fifteen seconds and would otherwise bury everything else.
+          for (const failure of summary.failures.slice(0, 5)) {
+            console.error(`[clawroll]   ${failure.signature}: ${failure.reason}`);
+          }
+          if (summary.failures.length > 5) {
+            console.error(`[clawroll]   … and ${summary.failures.length - 5} more`);
+          }
         }
 
         for (const withdrawal of await withdrawals.pending()) {
