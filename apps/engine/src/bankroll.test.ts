@@ -379,3 +379,39 @@ describe('startup reconciliation', () => {
     expect(result.microsRestored).toBeGreaterThanOrEqual(0);
   });
 });
+
+describe('startup reconciliation finds chips with no seat record', () => {
+  it('releases an in_play balance whose seat row has vanished', async () => {
+    // The exact shape that lost money on the deployed room: 20 USDC in_play, `table_seats`
+    // empty. The seat records had been removed without the chips being returned, so every
+    // seat-driven reconciliation found nothing to do and the balance stayed unspendable
+    // through restart after restart.
+    const agentId = await fundedAgent(10_000_000);
+    await bankroll.reserveBuyIn(agentId, 'main', 7_000_000);
+    await bankroll.trackSeat('main', agentId, 0, 7_000_000);
+
+    // Drop the seat row but leave the chips committed — reproducing the broken state rather
+    // than assuming it cannot happen, since it demonstrably did.
+    await sql`DELETE FROM table_seats WHERE agent_id = ${agentId}`;
+    expect(await ledger.balanceOfAgent(agentId, 'in_play')).toBe(7_000_000);
+
+    const result = await bankroll.reconcileAtStartup();
+
+    expect(result.agentsRestored).toBeGreaterThan(0);
+    expect(await ledger.balanceOfAgent(agentId, 'in_play')).toBe(0);
+    expect(await ledger.balanceOfAgent(agentId, 'available')).toBe(10_000_000);
+  });
+
+  it('is idempotent across repeated startups', async () => {
+    // Engines restart often. A second pass must not credit the money twice.
+    const agentId = await fundedAgent(10_000_000);
+    await bankroll.reserveBuyIn(agentId, 'main', 4_000_000);
+    await sql`DELETE FROM table_seats WHERE agent_id = ${agentId}`;
+
+    await bankroll.reconcileAtStartup();
+    await bankroll.reconcileAtStartup();
+
+    expect(await ledger.balanceOfAgent(agentId, 'available')).toBe(10_000_000);
+    expect(await ledger.balanceOfAgent(agentId, 'in_play')).toBe(0);
+  });
+});
