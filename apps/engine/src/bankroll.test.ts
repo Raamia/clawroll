@@ -415,3 +415,56 @@ describe('startup reconciliation finds chips with no seat record', () => {
     expect(await ledger.balanceOfAgent(agentId, 'in_play')).toBe(0);
   });
 });
+
+describe('the outbox cannot be starved by a settlement that never applies', () => {
+  it('reaches a fresh settlement even behind a wall of failed ones', async () => {
+    // Strict oldest-first ordering plus a LIMIT is a head-of-line block waiting to happen.
+    // A settlement that can never apply sits at the front forever, and once enough of them
+    // accumulate to fill the limit, no new settlement is ever applied again — money stops
+    // moving and nothing errors, because every drain is busy "working" on doomed rows.
+    //
+    // Found for real: 134 wedged rows in a local database, and the drain reporting failures
+    // on the same hundred every pass.
+    const poison = [];
+    for (let i = 0; i < 5; i++) {
+      const handId = `hand_poison_${randomUUID()}`;
+      poison.push(handId);
+      // References an agent with no in_play balance, so it can never post.
+      const ghost = await fundedAgent(1_000_000);
+      await bankroll.recordSettlement({
+        handId,
+        tableId: TABLE_ID,
+        deltas: [
+          { agentId: ghost, amountMicros: -900_000 },
+          { agentId: ghost, amountMicros: 900_000 },
+        ],
+        rakeMicros: 0,
+      });
+    }
+    // Fail them once so they are marked, which is what pushes them behind fresh work.
+    await bankroll.applyPendingSettlements(5);
+
+    const alice = await fundedAgent(10_000_000);
+    const bob = await fundedAgent(10_000_000);
+    await bankroll.reserveBuyIn(alice, TABLE_ID, 5_000_000);
+    await bankroll.reserveBuyIn(bob, TABLE_ID, 5_000_000);
+    const fresh = `hand_${randomUUID()}`;
+    await bankroll.recordSettlement({
+      handId: fresh,
+      tableId: TABLE_ID,
+      deltas: [
+        { agentId: alice, amountMicros: 1_000_000 },
+        { agentId: bob, amountMicros: -1_000_000 },
+      ],
+      rakeMicros: 0,
+    });
+
+    // A limit smaller than the backlog. Under oldest-first this would only ever see poison.
+    await bankroll.applyPendingSettlements(3);
+
+    const row = await sql<{ applied_ledger_tx_id: string | null }[]>`
+      SELECT applied_ledger_tx_id FROM hand_settlements WHERE hand_id = ${fresh}`;
+    expect(row[0]?.applied_ledger_tx_id).toBeTruthy();
+    expect(await ledger.balanceOfAgent(alice, 'in_play')).toBe(6_000_000);
+  });
+});

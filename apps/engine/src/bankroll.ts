@@ -116,7 +116,17 @@ export class BankrollService {
     >`SELECT hand_id, deltas, rake_micros::text
       FROM hand_settlements
       WHERE applied_ledger_tx_id IS NULL
-      ORDER BY created_at ASC
+      -- Never-attempted rows first, then previously-failed ones oldest-first.
+      --
+      -- Strict created_at order plus a LIMIT is a head-of-line block waiting to happen: a
+      -- settlement that can never apply — an agent deleted, a balance already released —
+      -- sits at the front of the queue forever, and once enough of them accumulate to fill
+      -- the limit, no new settlement is ever applied again. Money silently stops moving and
+      -- nothing errors, because each drain is "working" on the same doomed rows.
+      --
+      -- Found with 134 of them wedged in a local database. A poison row still retries, it
+      -- just cannot starve the hands that came after it.
+      ORDER BY (last_error IS NOT NULL), created_at ASC
       LIMIT ${limit}`;
 
     let applied = 0;

@@ -280,6 +280,21 @@ export class ClawrollServer {
     // `reconcileAtStartup`. Passing the live table ids here exempted the common case and
     // stranded real money on every deploy.
     if (this.bankroll) {
+      // Pending settlements first, then reconciliation — and the order is load-bearing.
+      //
+      // A settlement moves chips between `in_play` balances. Reconciling first releases
+      // those balances to `available`, and the settlement can then never apply: it fails
+      // with "insufficient funds" and stays in the outbox forever, poisoning the queue.
+      // That is exactly how a local database ended up with 134 wedged rows. A hand that has
+      // already been played is owed regardless of who is still sitting down.
+      const drained = await this.bankroll.applyPendingSettlements();
+      if (drained.applied > 0 || drained.failed > 0) {
+        console.log(
+          `[clawroll] applied ${drained.applied} settlement(s) left by the previous process` +
+            (drained.failed > 0 ? `, ${drained.failed} still failing` : ''),
+        );
+      }
+
       const reconciled = await this.bankroll.reconcileAtStartup();
       if (reconciled.agentsRestored > 0) {
         console.warn(
