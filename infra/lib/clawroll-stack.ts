@@ -43,6 +43,7 @@ import * as kms from 'aws-cdk-lib/aws-kms';
 import * as logs from 'aws-cdk-lib/aws-logs';
 import * as rds from 'aws-cdk-lib/aws-rds';
 import * as s3 from 'aws-cdk-lib/aws-s3';
+import * as acm from 'aws-cdk-lib/aws-certificatemanager';
 import * as cloudfront from 'aws-cdk-lib/aws-cloudfront';
 import * as origins from 'aws-cdk-lib/aws-cloudfront-origins';
 import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
@@ -477,7 +478,29 @@ export class ClawrollStack extends Stack {
       allowedMethods: cloudfront.AllowedMethods.ALLOW_ALL,
     };
 
+    /**
+     * A custom domain, when one has been set up.
+     *
+     * Passed as context (`-c siteDomain=… -c certificateArn=…`) rather than hard-coded, so the
+     * stack still deploys for anyone without a domain — including the first deploy, before
+     * the certificate exists.
+     *
+     * The certificate **must** live in us-east-1 whatever region the stack is in: CloudFront
+     * only reads them from there. It must also already be ISSUED — CloudFront rejects one
+     * still pending validation, so the DNS records have to be in place before this runs.
+     */
+    const siteDomain = this.node.tryGetContext('siteDomain') as string | undefined;
+    const certificateArn = this.node.tryGetContext('certificateArn') as string | undefined;
+    const domainConfig =
+      siteDomain && certificateArn
+        ? {
+            domainNames: [siteDomain, `www.${siteDomain}`],
+            certificate: acm.Certificate.fromCertificateArn(this, 'SiteCert', certificateArn),
+          }
+        : {};
+
     const distribution = new cloudfront.Distribution(this, 'Site', {
+      ...domainConfig,
       defaultBehavior: {
         origin: origins.S3BucketOrigin.withOriginAccessControl(siteBucket),
         viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
@@ -520,8 +543,12 @@ export class ClawrollStack extends Stack {
       description: 'Agent WebSocket and public read API',
     });
     new CfnOutput(this, 'SiteUrl', {
-      value: `https://${distribution.distributionDomainName}`,
+      value: siteDomain ? `https://${siteDomain}` : `https://${distribution.distributionDomainName}`,
       description: 'Spectator app',
+    });
+    new CfnOutput(this, 'DistributionDomain', {
+      value: distribution.distributionDomainName,
+      description: 'Point the domain’s CNAME here',
     });
     new CfnOutput(this, 'SiteBucketName', {
       value: siteBucket.bucketName,
