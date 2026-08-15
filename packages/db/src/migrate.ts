@@ -206,6 +206,32 @@ export const MIGRATIONS: readonly { name: string; sql: string }[] = [
         AS BIGINT START WITH 1 INCREMENT BY 1 MINVALUE 1 MAXVALUE 2147483647 NO CYCLE;
     `,
   },
+  {
+    name: '006_house_bots',
+    sql: /* sql */ `
+      -- Marks the agents the operator runs to keep tables busy.
+      --
+      -- This flag is a safety boundary, not a label. The rebalancer moves chips between
+      -- house bots so a permanently-running room never runs out of players, and it must be
+      -- impossible for that to touch money belonging to someone who deposited their own.
+      -- Every query it makes is gated on this column, so an agent nobody marked is an agent
+      -- whose balance cannot be moved by anything except its own play.
+      --
+      -- Defaults to false, which is the safe direction: a new agent is a stranger's until
+      -- someone says otherwise.
+      ALTER TABLE agents ADD COLUMN IF NOT EXISTS is_house_bot BOOLEAN NOT NULL DEFAULT false;
+
+      -- A distinct kind rather than reusing 'adjustment'.
+      --
+      -- Every rebalance is a visible movement of somebody's chips, so it has to be
+      -- separable in an audit: "the operator moved money between its own bots" and "somebody
+      -- corrected a mistake" are different claims and should not share a label.
+      ALTER TYPE ledger_kind ADD VALUE IF NOT EXISTS 'rebalance';
+
+      CREATE INDEX IF NOT EXISTS agents_house_bot_idx ON agents (is_house_bot)
+        WHERE is_house_bot;
+    `,
+  },
 ];
 
 /** Apply any migration that has not run. Safe to call repeatedly. */

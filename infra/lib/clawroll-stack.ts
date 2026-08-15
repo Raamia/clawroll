@@ -327,7 +327,21 @@ export class ClawrollStack extends Stack {
       // Passing the ARN turns "not set yet" into a state the worker can wait in rather than
       // a failure to launch, so the deploy completes and the operator populates the secret
       // afterwards with no redeploy.
-      environment: { ...commonEnvironment, MASTER_SEED_SECRET_ARN: masterSeedResource.ref },
+      environment: {
+        ...commonEnvironment,
+        MASTER_SEED_SECRET_ARN: masterSeedResource.ref,
+        // Keeps the house bots in the game.
+        //
+        // With no rake the chips are conserved, but they still concentrate: variance ends in
+        // gambler's ruin, and unequal strategies drift there faster. Without this the tables
+        // eventually go quiet, and the first anyone knows is opening the site and finding
+        // nobody playing.
+        //
+        // Chips are moved between house bots, never granted — see `rebalance.ts` for why
+        // that distinction is not cosmetic. A floor of zero switches it off.
+        REBALANCE_FLOOR_MICROS: String(2_000_000),
+        REBALANCE_TARGET_MICROS: String(8_000_000),
+      },
       secrets: databaseSecrets,
       logging: ecs.LogDrivers.awsLogs({ streamPrefix: 'wallet-worker', logGroup: workerLogs }),
     });

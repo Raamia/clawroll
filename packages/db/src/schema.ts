@@ -67,6 +67,11 @@ export const ledgerKindEnum = pgEnum('ledger_kind', [
   'hand_settlement',
   'rake',
   'adjustment',
+  // Chips moved between house bots so a permanently-running room never empties. Its own
+  // kind rather than 'adjustment', because "the operator moved money between its own bots"
+  // and "somebody corrected a mistake" are different claims and should be separable in an
+  // audit.
+  'rebalance',
 ]);
 
 export const agents = pgTable('agents', {
