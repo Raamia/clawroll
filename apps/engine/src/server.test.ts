@@ -141,7 +141,7 @@ describe('the server over real sockets', () => {
   const config = (overrides: Partial<ServerConfig> = {}): ServerConfig => ({
     ...DEFAULT_SERVER_CONFIG,
     port: 0,
-    table: TABLE,
+    tables: [TABLE],
     autoStartHands: false,
     ...overrides,
   });
@@ -343,5 +343,115 @@ describe('the server over real sockets', () => {
     // Scoped so a typo'd health-check path fails loudly instead of reporting healthy.
     const response = await fetch(`http://127.0.0.1:${port}/nope`);
     expect(response.status).toBe(404);
+  });
+});
+
+describe('a room with more than one table', () => {
+  const T1: TableConfig = { ...TABLE, tableId: 'alpha' };
+  const T2: TableConfig = { ...TABLE, tableId: 'beta' };
+
+  let directory: InMemoryAgentDirectory;
+  let server: ClawrollServer;
+  let port: number;
+  const clients: TestClient[] = [];
+
+  beforeEach(async () => {
+    directory = new InMemoryAgentDirectory();
+    server = new ClawrollServer(
+      { ...DEFAULT_SERVER_CONFIG, port: 0, tables: [T1, T2], autoStartHands: false },
+      directory,
+    );
+    port = await server.start();
+  });
+
+  afterEach(async () => {
+    for (const client of clients.splice(0)) client.close();
+    await server.stop();
+  });
+
+  const connect = async (path: string) => {
+    const client = await TestClient.connect(port, path);
+    clients.push(client);
+    return client;
+  };
+
+  const seat = async (agentId: string, tableId: string) => {
+    const { apiKey } = directory.register(agentId, agentId);
+    const client = await connect(`/agent?key=${apiKey}`);
+    await client.waitFor('welcome');
+    client.send({ type: 'join_table', tableId, buyIn: 5_000 });
+    await new Promise((r) => setTimeout(r, 120));
+    return client;
+  };
+
+  it('serves both tables and seats agents at the one they asked for', async () => {
+    await seat('a1', 'alpha');
+    await seat('b1', 'beta');
+
+    expect(server.tables.get('alpha')?.stackOf('a1')).toBe(5_000);
+    expect(server.tables.get('beta')?.stackOf('b1')).toBe(5_000);
+    // And crucially not at each other's.
+    expect(server.tables.get('beta')?.stackOf('a1')).toBeNull();
+    expect(server.tables.get('alpha')?.stackOf('b1')).toBeNull();
+  });
+
+  it('sends no further updates from a table an agent is not sitting at', async () => {
+    // The failure this prevents is subtle and self-inflicted: the SDK treats a `table_state`
+    // it does not appear in as proof it has been unseated, and re-buys. Broadcast every
+    // table to every agent and each one would try to buy in again whenever the *other* table
+    // moved — quietly draining bankrolls with nothing in any log to explain it.
+    //
+    // Only *updates* are scoped. The one-off snapshot on connect deliberately carries every
+    // table, so an agent can see where there is room before choosing one, and at that point
+    // it is seated nowhere and nothing is being claimed about it. So the count is taken after
+    // seating and compared, rather than asserting beta never appears at all.
+    const alpha = await seat('a1', 'alpha');
+    const betaSeenBefore = alpha
+      .of('table_state')
+      .filter((m) => (m as { tableId: string }).tableId === 'beta').length;
+
+    // Moves beta, which broadcasts beta's new state.
+    await seat('b1', 'beta');
+    await new Promise((r) => setTimeout(r, 120));
+
+    const betaSeenAfter = alpha
+      .of('table_state')
+      .filter((m) => (m as { tableId: string }).tableId === 'beta').length;
+
+    expect(betaSeenAfter).toBe(betaSeenBefore);
+    // And it is still hearing about its own table.
+    expect(
+      alpha.of('table_state').some((m) => (m as { tableId: string }).tableId === 'alpha'),
+    ).toBe(true);
+  });
+
+  it('refuses a table this room does not serve', async () => {
+    const { apiKey } = directory.register('c1', 'c1');
+    const client = await connect(`/agent?key=${apiKey}`);
+    await client.waitFor('welcome');
+    client.send({ type: 'join_table', tableId: 'nonexistent', buyIn: 5_000 });
+
+    const error = await client.waitFor('error');
+    expect(error).toMatchObject({ code: 'unknown_table' });
+    // Names what is actually on offer, rather than only what is not.
+    expect((error as { message: string }).message).toContain('alpha');
+  });
+
+  it('reports every table over the read API', async () => {
+    const spectator = await connect('/spectate');
+    await new Promise((r) => setTimeout(r, 80));
+    const ids = spectator.of('table_state').map((m) => (m as { tableId: string }).tableId);
+    expect(new Set(ids)).toEqual(new Set(['alpha', 'beta']));
+  });
+
+  it('deals on both tables independently', async () => {
+    for (const id of ['a1', 'a2']) await seat(id, 'alpha');
+    for (const id of ['b1', 'b2']) await seat(id, 'beta');
+
+    expect(server.tables.get('alpha')!.startHand()).toBe(true);
+    expect(server.tables.get('beta')!.startHand()).toBe(true);
+    expect(server.tables.get('alpha')!.currentHandId).not.toBe(
+      server.tables.get('beta')!.currentHandId,
+    );
   });
 });

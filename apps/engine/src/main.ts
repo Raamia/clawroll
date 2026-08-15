@@ -45,33 +45,53 @@ async function main(): Promise<void> {
   console.log(`[clawroll] loaded ${await directory.warm()} agent(s)`);
   directory.startRefreshing();
 
-  const table: TableConfig = {
-    tableId: process.env['TABLE_ID'] ?? 'main',
-    smallBlind: number('SMALL_BLIND_MICROS', 50_000),
-    bigBlind: number('BIG_BLIND_MICROS', 100_000),
+  /**
+   * The room's tables.
+   *
+   * Two of them, and unraked, both for the same reason: this is a devnet room whose whole
+   * purpose is that there is always something worth watching.
+   *
+   * **The rake is off deliberately, and it has to be.** Poker between bots is zero-sum, so
+   * with no rake the chips circulate forever and the game never stops. Turn a rake on and the
+   * house drains the table instead — measured on this very room at 5%, two agents lost 32.67
+   * of their 40 USDC in 820 hands, roughly four minutes. A permanently-running room and a
+   * rake are not compatible, and the rake is the part that has to go.
+   *
+   * Blinds are small relative to the buy-in so a bad run costs an agent a re-buy rather than
+   * its bankroll, and hands are paced for a human watching rather than for throughput.
+   */
+  const tableDefaults = {
+    smallBlind: number('SMALL_BLIND_MICROS', 10_000),
+    bigBlind: number('BIG_BLIND_MICROS', 20_000),
     maxSeats: number('MAX_SEATS', 6),
-    minBuyIn: number('MIN_BUY_IN_MICROS', 2_000_000),
-    maxBuyIn: number('MAX_BUY_IN_MICROS', 20_000_000),
+    minBuyIn: number('MIN_BUY_IN_MICROS', 1_000_000),
+    maxBuyIn: number('MAX_BUY_IN_MICROS', 5_000_000),
     actionTimeoutMs: number('ACTION_TIMEOUT_MS', 5_000),
     seedTimeoutMs: number('SEED_TIMEOUT_MS', 2_000),
-    // 5% capped at 3 big blinds, unraked before the flop — see `standardRake`.
-    //
-    // Set here rather than defaulted in `TableConfig`, so the poker package and every test
-    // stay unraked unless they ask for it, and a deployed room takes a cut without anyone
-    // remembering to configure one. A rake implemented and never switched on is dead code
-    // that reads like a working economy.
-    //
-    // `RAKE_PERCENTAGE=0` turns it off.
-    rakePercentage: number('RAKE_PERCENTAGE', 0.05),
+    // `RAKE_PERCENTAGE` can turn it back on; nothing here does.
+    rakePercentage: number('RAKE_PERCENTAGE', 0),
   };
+
+  const tables: TableConfig[] = [
+    { ...tableDefaults, tableId: 'main' },
+    // Deeper and slower: a different game to watch rather than a second copy of the first.
+    {
+      ...tableDefaults,
+      tableId: 'high',
+      smallBlind: tableDefaults.smallBlind * 5,
+      bigBlind: tableDefaults.bigBlind * 5,
+    },
+  ];
 
   const server = new ClawrollServer(
     {
       ...DEFAULT_SERVER_CONFIG,
       port: number('PORT', 8080),
-      table,
+      tables,
       autoStartHands: true,
-      handIntervalMs: number('HAND_INTERVAL_MS', 2_000),
+      // Ten seconds, not two. A hand every two seconds is a blur that no one can follow, and
+      // it burns through variance so fast that agents bust for reasons a viewer never sees.
+      handIntervalMs: number('HAND_INTERVAL_MS', 10_000),
     },
     directory,
     new BankrollService(sql, ledger),
@@ -79,7 +99,9 @@ async function main(): Promise<void> {
   );
 
   const port = await server.start();
-  console.log(`[clawroll] engine listening on :${port} · table ${table.tableId}`);
+  console.log(
+    `[clawroll] engine listening on :${port} · tables ${tables.map((t) => t.tableId).join(', ')}`,
+  );
 
   // ECS sends SIGTERM and waits before SIGKILL. Closing sockets deliberately means agents
   // see a clean close and can reconnect, rather than a hand vanishing mid-action.

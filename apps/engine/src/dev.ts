@@ -61,7 +61,7 @@ async function main(): Promise<void> {
     {
       ...DEFAULT_SERVER_CONFIG,
       port: PORT,
-      table: TABLE,
+      tables: [TABLE],
       autoStartHands: true,
       // Slow enough that a person watching can follow a hand.
       handIntervalMs: 4_000,

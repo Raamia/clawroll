@@ -127,7 +127,7 @@ async function startServer(overrides: Partial<TableConfig> = {}) {
     {
       ...DEFAULT_SERVER_CONFIG,
       port: 0,
-      table: { ...TABLE, ...overrides },
+      tables: [{ ...TABLE, ...overrides }],
       autoStartHands: false,
     },
     directory,

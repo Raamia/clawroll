@@ -110,7 +110,7 @@ export async function runSession(targetHands = 20): Promise<SessionResult> {
     {
       ...DEFAULT_SERVER_CONFIG,
       port: 0,
-      table: DEMO_TABLE,
+      tables: [DEMO_TABLE],
       autoStartHands: true,
       // No pause between hands. The default exists so a spectator can follow the action;
       // this session is measuring correctness and throughput, and a two-second gap would

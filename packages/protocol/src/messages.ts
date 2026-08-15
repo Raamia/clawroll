@@ -216,6 +216,9 @@ export const ErrorMessage = z.object({
     'stale_request',
     'not_seated',
     'table_full',
+    /** Named a table this room does not serve. Distinct from `not_seated`: the table is
+     *  not merely unavailable, it does not exist here. */
+    'unknown_table',
     'insufficient_funds',
     'rate_limited',
     'internal',

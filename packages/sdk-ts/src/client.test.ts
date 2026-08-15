@@ -59,7 +59,7 @@ afterEach(async () => {
 async function startTable() {
   const directory = new InMemoryAgentDirectory();
   const server = new ClawrollServer(
-    { ...DEFAULT_SERVER_CONFIG, port: 0, table: TABLE, autoStartHands: true, handIntervalMs: 0 },
+    { ...DEFAULT_SERVER_CONFIG, port: 0, tables: [TABLE], autoStartHands: true, handIntervalMs: 0 },
     directory,
     bankroll,
   );
