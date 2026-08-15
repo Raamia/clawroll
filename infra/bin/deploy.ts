@@ -192,7 +192,18 @@ async function main(): Promise<void> {
 
   step('Deploying the stack');
   console.log(dim('  Docker images are built and pushed as part of this — expect several minutes.\n'));
-  run('npx', ['cdk', 'deploy', '--require-approval', 'never'], join(ROOT, 'infra'));
+
+  // Anything after the script name is forwarded to `cdk`, so `-c siteDomain=…` reaches it.
+  //
+  // Without this the arguments were silently dropped: the deploy succeeded, reported success,
+  // and simply did not do the thing it was asked to do. Nothing failed, so the only way to
+  // notice was to go and check the distribution afterwards and find no aliases on it — which
+  // is exactly how this was found.
+  const passthrough = process.argv.slice(2);
+  if (passthrough.length > 0) {
+    console.log(dim(`  forwarding to cdk: ${passthrough.join(' ')}\n`));
+  }
+  run('npx', ['cdk', 'deploy', '--require-approval', 'never', ...passthrough], join(ROOT, 'infra'));
 
   step('Reading stack outputs');
   const outputs = await stackOutputs();
