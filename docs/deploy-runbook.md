@@ -148,6 +148,44 @@ balancer itself still has no certificate; that needs a domain, and nothing here 
 
 ---
 
+## Putting it on your own domain
+
+Optional, and entirely separate from getting the room running.
+
+**1. Request a certificate — in `us-east-1`, whatever region the stack is in.** CloudFront
+reads certificates only from there, and it is the single most common reason this fails for a
+stack deployed elsewhere.
+
+**2. Add the two validation CNAMEs at your DNS provider, unproxied.** On Cloudflare that means
+the grey cloud, not the orange one. A proxied record means Cloudflare answers on your behalf,
+so AWS never sees the value it is checking for — Cloudflare now refuses these outright, but
+where it does not, validation simply sits at pending with nothing explaining why.
+
+**3. Wait for the certificate to reach `ISSUED`.** CloudFront rejects one that is still
+pending, so this cannot be rushed by deploying anyway.
+
+> **A freshly registered domain adds a wait nobody warns you about.** The registry has to
+> publish your nameserver delegation before *anyone*, AWS included, can resolve the records —
+> so a correct record set can look completely broken. Confirm your records exist by asking
+> your provider's nameservers directly (`dig CNAME <record> @<their-ns>`); if they answer
+> there and public resolvers say NXDOMAIN, the records are fine and the delegation is the
+> holdup.
+
+**4. Deploy with the domain:**
+
+```bash
+pnpm --filter @clawroll/infra deploy:all -- -c siteDomain=example.com -c certificateArn=arn:aws:acm:us-east-1:…
+```
+
+**5. Point the domain at the distribution** using the `DistributionDomain` output — a CNAME
+for `www`, and either an ALIAS at the apex or, on Cloudflare, a CNAME that its flattening
+handles.
+
+Agents can then connect to `wss://example.com/agent` instead of the CloudFront hostname. Both
+keep working; they are the same distribution.
+
+---
+
 ## Tearing it down
 
 ```bash
