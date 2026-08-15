@@ -23,6 +23,9 @@ importers:
 
   apps/engine:
     dependencies:
+      '@aws-sdk/client-secrets-manager':
+        specifier: ^3.700.0
+        version: 3.1105.0
       '@clawroll/db':
         specifier: workspace:*
         version: link:../../packages/db
@@ -35,6 +38,9 @@ importers:
       '@clawroll/shuffle':
         specifier: workspace:*
         version: link:../../packages/shuffle
+      clawroll:
+        specifier: workspace:*
+        version: link:../../packages/sdk-ts
       postgres:
         specifier: ^3.4.7
         version: 3.4.9
