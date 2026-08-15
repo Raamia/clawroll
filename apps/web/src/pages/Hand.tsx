@@ -1,128 +1,382 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { api, shortId, usdc, type HandRecord } from '../api';
+import { PokerTable, type PodView, type TableView } from '../components/Table';
+import { Avatar } from '../components/Avatar';
 import { Cards, HiddenHand } from '../components/Cards';
+import { useReducedMotion } from '../hooks';
+import { actionLabel } from '../ui';
 
 /**
  * Hand replay.
  *
  * The record contains the ordered action log, so the betting can be stepped through exactly
- * as it happened — no reconstruction, no guessing. Hole cards appear only where the archive
- * has them, which is only where they were actually shown at showdown.
+ * as it happened — no reconstruction, no guessing. What this page adds is the state *between*
+ * the lines of that log: stacks, bets on the cloth, who is next to act. All of it is derived
+ * from the archive by `stateAt` below, which means the replay cannot drift from the record.
+ *
+ * Hole cards appear only where the archive has them, which is only where they were actually
+ * shown at showdown. A hand that was folded out stays face down here for ever.
  */
+
+const SPEEDS = [
+  { label: '0.5×', ms: 2000 },
+  { label: '1×', ms: 1100 },
+  { label: '2×', ms: 550 },
+] as const;
+
 export function Hand({ handId }: { handId: string }) {
   const [hand, setHand] = useState<HandRecord | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [step, setStep] = useState(0);
+  const [playing, setPlaying] = useState(false);
+  const [speed, setSpeed] = useState(1);
+  const [sweeping, setSweeping] = useState(false);
+  const reduced = useReducedMotion();
+  const logRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     setHand(null);
     setError(null);
     setStep(0);
+    setPlaying(false);
     api.hand(handId).then(setHand).catch((e: Error) => setError(e.message));
   }, [handId]);
 
-  const streets = useMemo(() => {
-    if (!hand) return [];
-    // How much board is visible at each point in the replay.
-    const visible: Record<string, number> = {
-      preflop: 0, flop: 3, turn: 4, river: 5, showdown: 5, complete: 5,
+  const total = hand?.actions.length ?? 0;
+  const atEnd = step >= total;
+
+  // Autoplay. Deliberately a step at a time rather than a smooth clock: the record is a list
+  // of discrete decisions, and playing it as anything else would invent timing that was
+  // never recorded.
+  useEffect(() => {
+    if (!playing || atEnd) return;
+    const timer = setTimeout(() => setStep((s) => Math.min(total, s + 1)), SPEEDS[speed]!.ms);
+    return () => clearTimeout(timer);
+  }, [playing, step, atEnd, total, speed]);
+
+  useEffect(() => {
+    if (atEnd) setPlaying(false);
+  }, [atEnd]);
+
+  const jump = useCallback((to: number) => {
+    setStep(to);
+    setPlaying(false);
+  }, []);
+
+  // The controls a video player would have, on the keys they live on there.
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.target instanceof HTMLInputElement) return;
+      if (event.key === 'ArrowRight') setStep((s) => Math.min(total, s + 1));
+      else if (event.key === 'ArrowLeft') setStep((s) => Math.max(0, s - 1));
+      else if (event.key === 'Home') jump(0);
+      else if (event.key === 'End') jump(total);
+      else if (event.key === ' ') {
+        event.preventDefault();
+        setPlaying((p) => !p);
+      } else return;
+      if (event.key.startsWith('Arrow')) setPlaying(false);
     };
-    return hand.actions.map((a) => visible[a.street] ?? 0);
-  }, [hand]);
+    addEventListener('keydown', onKey);
+    return () => removeEventListener('keydown', onKey);
+  }, [total, jump]);
+
+  const state = useMemo(() => (hand ? stateAt(hand, step) : null), [hand, step]);
+
+  // Chips sweep in when a street closes, exactly as they do on the live felt.
+  const street = state?.street ?? '';
+  useEffect(() => {
+    if (reduced || !street) return;
+    setSweeping(true);
+    const timer = setTimeout(() => setSweeping(false), 550);
+    return () => clearTimeout(timer);
+  }, [street, reduced]);
+
+  // Keep the acting line in view while the hand plays itself.
+  useEffect(() => {
+    if (!playing) return;
+    logRef.current?.querySelector('.log-row.now')?.scrollIntoView({ block: 'nearest' });
+  }, [step, playing]);
 
   if (error) return <div className="empty">Could not load hand: {error}</div>;
-  if (!hand) return <div className="empty">Loading…</div>;
+  if (!hand || !state) return <LoadingHand />;
 
-  const boardCards = hand.board ? hand.board.split(' ') : [];
-  const shown = step === 0 ? 0 : (streets[step - 1] ?? boardCards.length);
-  const visibleBoard = boardCards.slice(0, step >= hand.actions.length ? boardCards.length : shown);
-  const atEnd = step >= hand.actions.length;
-
-  const netFor = (seat: HandRecord['seats'][number]) => seat.finalStack - seat.startingStack;
+  const view = toView(hand, state, sweeping);
 
   return (
     <>
-      <h1>Hand replay</h1>
-      <p className="lede mono">{hand.handId}</p>
-
-      <div className="felt">
-        <div className="board">
-          {visibleBoard.length > 0 ? (
-            <Cards cards={visibleBoard.join(' ')} />
-          ) : (
-            <span className="muted">pre-flop</span>
-          )}
+      <div className="controls" style={{ marginTop: 34, justifyContent: 'space-between' }}>
+        <div>
+          <span className="eyebrow">Replay</span>
+          {/* The headline is what the hand was worth in the end, not what is in the middle at
+              this instant — the felt already shows that, and it moves. */}
+          <h1 style={{ margin: '4px 0 0' }}>
+            {usdc(hand.pots.reduce((sum, p) => sum + p.amount, 0))}{' '}
+            <span className="muted" style={{ fontSize: '0.6em' }}>USDC pot</span>
+          </h1>
+          <p className="lede mono" style={{ margin: '8px 0 0' }}>{hand.handId}</p>
         </div>
-        <div className="muted mono">
-          {atEnd ? 'showdown' : (hand.actions[step]?.street ?? 'preflop')} · action {step} of{' '}
-          {hand.actions.length}
+        <a className="btn" href={`#/verify/${hand.handId}`}>
+          Verify this hand
+        </a>
+      </div>
+
+      <PokerTable view={view} />
+
+      <div className="replay-bar">
+        <div className="controls">
+          <button className="btn icon" onClick={() => jump(0)} disabled={step === 0} title="Start (Home)">
+            ⏮
+          </button>
+          <button
+            className="btn icon"
+            onClick={() => jump(Math.max(0, step - 1))}
+            disabled={step === 0}
+            title="Back (←)"
+          >
+            ◀
+          </button>
+          <button
+            className="btn primary"
+            onClick={() => (atEnd ? (setStep(0), setPlaying(true)) : setPlaying((p) => !p))}
+            title="Play / pause (space)"
+            style={{ minWidth: 92, justifyContent: 'center' }}
+          >
+            {atEnd ? '↻ Replay' : playing ? '❚❚ Pause' : '▶ Play'}
+          </button>
+          <button
+            className="btn icon"
+            onClick={() => jump(Math.min(total, step + 1))}
+            disabled={atEnd}
+            title="Forward (→)"
+          >
+            ▶
+          </button>
+          <button className="btn icon" onClick={() => jump(total)} disabled={atEnd} title="End (End)">
+            ⏭
+          </button>
+        </div>
+
+        <div className="scrub">
+          <input
+            type="range"
+            min={0}
+            max={total}
+            value={step}
+            onChange={(e) => jump(Number(e.target.value))}
+            style={{ '--pct': `${total === 0 ? 100 : (step / total) * 100}%` } as CSSProperties}
+            aria-label="Replay position"
+          />
+          <span className="scrub-count">
+            {step} / {total}
+          </span>
+        </div>
+
+        <div className="segmented">
+          {SPEEDS.map((s, i) => (
+            <button key={s.label} className={i === speed ? 'on' : ''} onClick={() => setSpeed(i)}>
+              {s.label}
+            </button>
+          ))}
         </div>
       </div>
 
-      <div className="controls" style={{ marginBottom: 20 }}>
-        <button className="btn" onClick={() => setStep(0)} disabled={step === 0}>
-          ⏮ start
-        </button>
-        <button className="btn" onClick={() => setStep((s) => Math.max(0, s - 1))} disabled={step === 0}>
-          ◀ back
-        </button>
-        <button
-          className="btn primary"
-          onClick={() => setStep((s) => Math.min(hand.actions.length, s + 1))}
-          disabled={atEnd}
-        >
-          step ▶
-        </button>
-        <button className="btn" onClick={() => setStep(hand.actions.length)} disabled={atEnd}>
-          end ⏭
-        </button>
-        <a className="btn" href={`#/verify/${hand.handId}`}>verify this hand</a>
-      </div>
+      <p className="keys">
+        <kbd>←</kbd> <kbd>→</kbd> step · <kbd>space</kbd> play · <kbd>home</kbd> <kbd>end</kbd> jump
+      </p>
 
-      <div className="seats">
-        {hand.seats.map((seat) => {
-          const net = netFor(seat);
+      <h2>Action log</h2>
+      <div className="rows" ref={logRef} style={{ maxHeight: 420, overflowY: 'auto', paddingRight: 4 }}>
+        {hand.actions.map((action, i) => {
+          const seat = hand.seats.find((s) => s.seat === action.seat);
+          const say = actionLabel(action.action, action.amount, 1);
+          const when = i < step ? 'past' : i === step ? 'now' : '';
           return (
-            <div key={seat.seat} className="seat">
-              <div className="seat-name">
-                <a href={`#/agent/${encodeURIComponent(seat.agentId)}`} className="plain ellipsis">
-                  {shortId(seat.agentId, 14)}
-                </a>
-              </div>
-              <div className="seat-stack">
-                {usdc(seat.startingStack)} → {usdc(seat.finalStack)}{' '}
-                <span className={net > 0 ? 'win' : net < 0 ? 'lose' : 'muted'}>
-                  {net > 0 ? '+' : ''}
-                  {usdc(net)}
-                </span>
-              </div>
-              <div className="seat-foot">
-                {/* Only shown if it was shown. A folded hand stays face down forever. */}
-                {seat.holeCards ? <Cards cards={seat.holeCards} small /> : <HiddenHand small />}
-                {seat.seat === hand.buttonSeat && <span className="chip">button</span>}
-              </div>
+            <div
+              key={i}
+              className={`log-row ${when}`}
+              onClick={() => jump(i + 1)}
+              role="button"
+              tabIndex={0}
+              onKeyDown={(e) => e.key === 'Enter' && jump(i + 1)}
+            >
+              <span className="log-street">{action.street}</span>
+              <Avatar id={seat?.agentId ?? String(action.seat)} size="sm" />
+              <span className="grow ellipsis" style={{ fontSize: 13 }}>
+                {seat ? shortId(seat.agentId, 22) : `seat ${action.seat}`}
+              </span>
+              <span className={`log-verb ${say.kind}`}>{action.action}</span>
+              {action.amount > 0 && <span className="num" style={{ fontSize: 12.5 }}>{usdc(action.amount)}</span>}
             </div>
           );
         })}
       </div>
 
-      <h2>Action log</h2>
+      <h2>Result</h2>
       <div className="rows">
-        {hand.actions.map((action, i) => (
-          <div
-            key={i}
-            className="row"
-            style={{ opacity: i < step ? 1 : 0.35, cursor: 'pointer' }}
-            onClick={() => setStep(i + 1)}
-          >
-            <span className="mono muted" style={{ width: 60 }}>{action.street}</span>
-            <span className="grow">
-              seat {action.seat} <strong>{action.action}</strong>
-            </span>
-            {action.amount > 0 && <span className="mono">{usdc(action.amount)}</span>}
-          </div>
-        ))}
+        {hand.seats.map((seat) => {
+          const net = seat.finalStack - seat.startingStack;
+          return (
+            <a key={seat.seat} className="row" href={`#/agent/${encodeURIComponent(seat.agentId)}`}>
+              <Avatar id={seat.agentId} />
+              <span className="grow" style={{ minWidth: 0 }}>
+                <div className="ellipsis" style={{ fontSize: 13.5, fontWeight: 550 }}>
+                  {shortId(seat.agentId, 26)}
+                </div>
+                <div className="mono faint">
+                  seat {seat.seat}
+                  {seat.seat === hand.buttonSeat ? ' · button' : ''}
+                </div>
+              </span>
+              {seat.holeCards ? <Cards cards={seat.holeCards} size="sm" dealt={false} tight /> : <HiddenHand size="sm" />}
+              <span className="num" style={{ width: 132, textAlign: 'right' }}>
+                <span className="faint">{usdc(seat.startingStack)} →</span> {usdc(seat.finalStack)}
+              </span>
+              <span
+                className={`num ${net > 0 ? 'win' : net < 0 ? 'lose' : 'faint'}`}
+                style={{ width: 74, textAlign: 'right', fontSize: 14 }}
+              >
+                {net > 0 ? '+' : ''}
+                {usdc(net)}
+              </span>
+            </a>
+          );
+        })}
       </div>
     </>
   );
+}
+
+function LoadingHand() {
+  return (
+    <>
+      <div className="skeleton" style={{ height: 30, width: 220, margin: '38px 0 10px' }} />
+      <div className="skeleton" style={{ height: 260, borderRadius: 999 }} />
+      <div className="skeleton" style={{ height: 62, marginTop: 20 }} />
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Replay state
+// ---------------------------------------------------------------------------
+
+interface ReplayState {
+  street: string;
+  pot: number;
+  stacks: Map<number, number>;
+  bets: Map<number, number>;
+  folded: Set<number>;
+  allin: Set<number>;
+  acting: number | null;
+  finished: boolean;
+}
+
+/**
+ * The table as it stood after `step` actions.
+ *
+ * Rebuilt from scratch on every step rather than accumulated, so scrubbing backwards is
+ * exactly as correct as playing forwards — a replay that only worked in one direction would
+ * be a subtly different hand depending on how you arrived at a moment in it.
+ *
+ * The blinds are posted here because the archived action log does not contain them: it
+ * records decisions, and a blind is not one. Heads-up the button *is* the small blind, which
+ * mirrors `dealHand` in `@clawroll/poker`.
+ */
+function stateAt(hand: HandRecord, step: number): ReplayState {
+  const order = [...hand.seats].sort((a, b) => a.seat - b.seat);
+  const stacks = new Map(order.map((s) => [s.seat, s.startingStack]));
+  const bets = new Map(order.map((s) => [s.seat, 0]));
+  const folded = new Set<number>();
+  const allin = new Set<number>();
+
+  const after = (seat: number): number => {
+    const i = order.findIndex((s) => s.seat === seat);
+    return order[(i + 1) % order.length]!.seat;
+  };
+  const put = (seat: number, amount: number) => {
+    const have = stacks.get(seat) ?? 0;
+    const paid = Math.min(have, amount);
+    stacks.set(seat, have - paid);
+    bets.set(seat, (bets.get(seat) ?? 0) + paid);
+    if (have - paid === 0) allin.add(seat);
+  };
+
+  const headsUp = order.length === 2;
+  const sb = headsUp ? hand.buttonSeat : after(hand.buttonSeat);
+  put(sb, hand.smallBlind);
+  put(after(sb), hand.bigBlind);
+
+  let street = 'preflop';
+  for (let i = 0; i < Math.min(step, hand.actions.length); i++) {
+    const action = hand.actions[i]!;
+    if (action.street !== street) {
+      // A street closed: everything on the cloth is now in the middle.
+      street = action.street;
+      for (const seat of bets.keys()) bets.set(seat, 0);
+    }
+    if (action.action === 'fold') folded.add(action.seat);
+    else put(action.seat, action.amount);
+  }
+
+  const finished = step >= hand.actions.length;
+  const next = hand.actions[step];
+  if (!finished && next && next.street !== street) {
+    street = next.street;
+    for (const seat of bets.keys()) bets.set(seat, 0);
+  }
+
+  // Everything wagered so far, which is what the engine means by "pot".
+  const pot = order.reduce((sum, s) => sum + (s.startingStack - (stacks.get(s.seat) ?? 0)), 0);
+
+  return {
+    street: finished ? 'complete' : street,
+    pot,
+    stacks,
+    bets,
+    folded,
+    allin,
+    acting: finished ? null : (next?.seat ?? null),
+    finished,
+  };
+}
+
+function toView(hand: HandRecord, state: ReplayState, sweeping: boolean): TableView {
+  const won = new Map<number, number>();
+  for (const award of hand.awards) won.set(award.seat, (won.get(award.seat) ?? 0) + award.amount);
+
+  const maxSeats = Math.max(...hand.seats.map((s) => s.seat)) + 1;
+  const seats: PodView[] = hand.seats.map((s) => ({
+    seat: s.seat,
+    playerId: s.agentId,
+    name: shortId(s.agentId, 14),
+    stack: state.finished ? s.finalStack : (state.stacks.get(s.seat) ?? 0),
+    // Once the hand is over there is nothing on the cloth: the last street's bets have been
+    // pulled in, which is exactly what the pot in the middle is now showing.
+    bet: state.finished ? 0 : (state.bets.get(s.seat) ?? 0),
+    status: state.folded.has(s.seat) ? 'folded' : state.allin.has(s.seat) ? 'allin' : 'active',
+    // Shown only at the end, and only where the archive has them — mid-replay every hand is
+    // face down, exactly as it was to anyone watching at the time.
+    holeCards: state.finished ? s.holeCards : null,
+    isButton: s.seat === hand.buttonSeat,
+    isActing: state.acting === s.seat,
+    won: state.finished ? (won.get(s.seat) ?? 0) : 0,
+    showdown: null,
+    say: null,
+  }));
+
+  return {
+    seats,
+    maxSeats,
+    board: hand.board,
+    pot: state.pot,
+    street: state.street,
+    sweeping,
+    // A replay has no next hand to move on to, so what was won stays on screen instead of
+    // announcing itself and fading the way it does on the live felt.
+    hold: state.finished,
+    handId: hand.handId,
+    label: hand.tableId,
+    awards: state.finished ? hand.awards.map((a) => ({ seat: a.seat, amount: a.amount })) : [],
+  };
 }

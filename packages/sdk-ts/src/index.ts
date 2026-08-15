@@ -1,8 +1,8 @@
 /**
- * `@clawroll/sdk` — write a poker agent in about ten lines.
+ * `clawroll` — write a poker agent in about ten lines.
  *
  * ```ts
- * import { play } from '@clawroll/sdk';
+ * import { play } from 'clawroll';
  *
  * play({
  *   url: 'wss://clawroll.example',

@@ -1,14 +1,69 @@
 /**
  * The surface an agent author actually touches.
  *
- * Re-exported from `@clawroll/protocol` rather than redefined, so the SDK cannot drift from
- * the wire format. A separate hand-written copy would go stale exactly once and then be
- * wrong forever.
+ * ## Why these are written out rather than re-exported
+ *
+ * They used to be `export type { ActionType, LegalActionsView, SeatView } from
+ * '@clawroll/protocol'`, on the reasoning that re-exporting cannot drift from the wire format
+ * while a hand-written copy goes stale exactly once and is then wrong forever. That reasoning
+ * is sound, and the anti-drift guarantee is kept below — but the re-export could not survive
+ * publishing.
+ *
+ * `@clawroll/protocol` is bundled into the published package, so it does not exist for a
+ * consumer to import from. A re-export leaves `import { SeatView } from '@clawroll/protocol'`
+ * in the emitted `.d.ts` — a specifier nobody outside this repo can resolve. The JavaScript
+ * runs perfectly and every TypeScript user fails to compile, which is a failure a plain-JS
+ * smoke test never catches.
+ *
+ * Declaring them here also produces far better types for a consumer: readable interfaces in
+ * the editor instead of `z.infer<typeof ...>` inference chains.
+ *
+ * ## How drift is prevented anyway
+ *
+ * `assertMatchesProtocol` below is a compile-time proof that these declarations and the zod
+ * schemas describe the same shapes, in both directions. Add a field to the protocol, remove
+ * one here, or change a type, and `pnpm typecheck` fails in this file. That is strictly
+ * stronger than the re-export: it was an assumption, this is checked.
  */
 
-import type { ActionType, LegalActionsView, SeatView } from '@clawroll/protocol';
+/** What an agent may do. */
+export type ActionType = 'fold' | 'check' | 'call' | 'bet' | 'raise';
 
-export type { ActionType, LegalActionsView, SeatView };
+/** One seat as the agent sees it. */
+export interface SeatView {
+  readonly seat: number;
+  readonly playerId: string | null;
+  readonly displayName: string | null;
+  readonly stack: number;
+  readonly committedThisStreet: number;
+  readonly status: 'active' | 'folded' | 'allin' | 'sitting_out' | 'empty';
+  /**
+   * Populated only for the receiving agent's own seat, or for everyone at showdown. Live hole
+   * cards are never broadcast — a spectator feed carrying them would let an operator watch the
+   * public stream and feed their own bot.
+   */
+  readonly holeCards: string | null;
+}
+
+/**
+ * What is legal right now, precomputed by the server.
+ *
+ * An agent never needs to re-derive the betting rules: minimum raises, all-in behaviour and
+ * side pots are already accounted for. If `canRaise` is false, raising is not possible.
+ */
+export interface LegalActionsView {
+  readonly canFold: boolean;
+  readonly canCheck: boolean;
+  readonly canCall: boolean;
+  /** Additional chips needed to call, already capped at the seat's stack. */
+  readonly callAmount: number;
+  readonly canBet: boolean;
+  readonly canRaise: boolean;
+  /** Smallest legal `amount`; clamped to `maxRaiseTo` when the seat can only shove. */
+  readonly minRaiseTo: number;
+  /** Largest legal `amount` — the seat's whole stack. */
+  readonly maxRaiseTo: number;
+}
 
 /** What the agent decides to do. */
 export interface Decision {

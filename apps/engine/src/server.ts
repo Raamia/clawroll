@@ -36,7 +36,14 @@ import { type LedgerEvent, type TableConfig, type TableIO, TableRuntime } from '
 
 export interface ServerConfig {
   readonly port: number;
-  readonly table: TableConfig;
+  /**
+   * Every table this process serves.
+   *
+   * A list rather than one table because a room with a single table is a room with nothing
+   * to switch between. The runtime was always per-table and self-contained; only this
+   * adapter assumed there was exactly one of them.
+   */
+  readonly tables: readonly TableConfig[];
   /** Frames larger than this are rejected by `ws` before we ever see them. */
   readonly maxMessageBytes: number;
   /** Token-bucket refill rate per connection. */
@@ -55,7 +62,7 @@ export interface ServerConfig {
   readonly handIntervalMs: number;
 }
 
-export const DEFAULT_SERVER_CONFIG: Omit<ServerConfig, 'port' | 'table'> = {
+export const DEFAULT_SERVER_CONFIG: Omit<ServerConfig, 'port' | 'tables'> = {
   maxMessageBytes: 16 * 1024,
   // Generous on purpose. Throttling is meant to stop abuse, but a dropped *action* is
   // not a dropped ping: the agent then misses its deadline and the server folds for it,
@@ -85,7 +92,15 @@ export class ClawrollServer {
   private readonly agentSockets = new Map<string, WebSocket>();
   private ticker: NodeJS.Timeout | null = null;
   private draining = false;
-  private lastHandEndedAt = 0;
+  /** Per table, so a slow table cannot hold up a busy one. */
+  private readonly lastHandEndedAt = new Map<string, number>();
+  /**
+   * Which table each agent is sitting at.
+   *
+   * Actions arrive on a socket, not addressed to a table, so this is how an action finds the
+   * runtime that should judge it.
+   */
+  private readonly agentTable = new Map<string, string>();
   /**
    * Events drained from the runtime but not yet durable.
    *
@@ -95,7 +110,22 @@ export class ClawrollServer {
    */
   private readonly undrained: LedgerEvent[] = [];
 
-  readonly table: TableRuntime;
+  readonly tables = new Map<string, TableRuntime>();
+
+  /**
+   * The only table, for a server configured with one.
+   *
+   * Most callers — the demo session, every gameplay test — serve a single table and reading
+   * `[...tables.values()][0]` at each of them would be noise. Throws rather than returning
+   * an arbitrary table when there are several, since "the table" is meaningless then.
+   */
+  get table(): TableRuntime {
+    const all = [...this.tables.values()];
+    if (all.length !== 1) {
+      throw new Error(`this server serves ${all.length} tables; name the one you mean`);
+    }
+    return all[0]!;
+  }
 
   constructor(
     private readonly config: ServerConfig,
@@ -108,12 +138,19 @@ export class ClawrollServer {
     /** Omit to run without a public archive; the read API then reports nothing. */
     private readonly archive: HandArchive | null = null,
   ) {
-    const io: TableIO = {
-      send: (agentId, message) => this.sendTo(agentId, message),
-      broadcast: (message) => this.broadcast(message),
-    };
+    for (const tableConfig of config.tables) {
+      // Broadcast is scoped to the table it came from.
+      //
+      // A global broadcast would deliver table B's `table_state` to an agent sitting at
+      // table A, and the SDK reads a state it does not appear in as "I am no longer seated"
+      // — so it would try to buy in again, every time any other table moved. Spectators
+      // still see everything and filter client-side; they are watching, not playing.
+      const io: TableIO = {
+        send: (agentId, message) => this.sendTo(agentId, message),
+        broadcast: (message) => this.broadcastFrom(tableConfig.tableId, message),
+      };
 
-    this.table = new TableRuntime(config.table, {
+      this.tables.set(tableConfig.tableId, new TableRuntime(tableConfig, {
       io,
       now: () => Date.now(),
       // Globally unique, not a per-process counter.
@@ -128,7 +165,9 @@ export class ClawrollServer {
       // collision would make the record ambiguous. Two server instances would collide from
       // their very first hand.
       nextId: (prefix) => `${prefix}_${randomUUID()}`,
-    });
+      }));
+      this.lastHandEndedAt.set(tableConfig.tableId, 0);
+    }
 
     this.http = createServer((req, res) => {
       void this.handleHttp(req.url ?? '/', res);
@@ -168,7 +207,7 @@ export class ClawrollServer {
       }
 
       if (path === '/api/tables') {
-        json(200, { tables: [this.table.tableState()] });
+        json(200, { tables: [...this.tables.values()].map((t) => t.tableState()) });
         return;
       }
 
@@ -232,15 +271,35 @@ export class ClawrollServer {
   }
 
   async start(): Promise<number> {
-    // A crash leaves in_play balances with no table behind them: money the agent cannot
+    // A restart leaves in_play balances with no table behind them: money the agent cannot
     // spend and no table holds. Returning it before accepting connections means a
     // reconnecting agent sees a correct balance rather than a mysteriously missing one.
+    //
+    // Every seat is released, not only those at tables this process no longer serves. Seating
+    // lives in memory, so a process that has just started has nobody seated anywhere — see
+    // `reconcileAtStartup`. Passing the live table ids here exempted the common case and
+    // stranded real money on every deploy.
     if (this.bankroll) {
-      const reconciled = await this.bankroll.reconcileOrphanedChips([this.config.table.tableId]);
+      // Pending settlements first, then reconciliation — and the order is load-bearing.
+      //
+      // A settlement moves chips between `in_play` balances. Reconciling first releases
+      // those balances to `available`, and the settlement can then never apply: it fails
+      // with "insufficient funds" and stays in the outbox forever, poisoning the queue.
+      // That is exactly how a local database ended up with 134 wedged rows. A hand that has
+      // already been played is owed regardless of who is still sitting down.
+      const drained = await this.bankroll.applyPendingSettlements();
+      if (drained.applied > 0 || drained.failed > 0) {
+        console.log(
+          `[clawroll] applied ${drained.applied} settlement(s) left by the previous process` +
+            (drained.failed > 0 ? `, ${drained.failed} still failing` : ''),
+        );
+      }
+
+      const reconciled = await this.bankroll.reconcileAtStartup();
       if (reconciled.agentsRestored > 0) {
         console.warn(
-          `[clawroll] returned ${reconciled.microsRestored} micro-USDC stranded at dead tables ` +
-            `for ${reconciled.agentsRestored} agent(s)`,
+          `[clawroll] returned ${reconciled.microsRestored} micro-USDC left seated by the ` +
+            `previous process for ${reconciled.agentsRestored} agent(s)`,
         );
       }
     }
@@ -263,12 +322,15 @@ export class ClawrollServer {
 
   /** One pass: enforce deadlines, deal if idle, then get what happened into Postgres. */
   private tick(): void {
-    this.table.tick();
+    const now = Date.now();
+    for (const [tableId, table] of this.tables) {
+      table.tick();
 
-    if (this.config.autoStartHands && this.table.currentPhase === 'idle') {
-      const now = Date.now();
-      if (now - this.lastHandEndedAt >= this.config.handIntervalMs) {
-        if (this.table.startHand()) this.lastHandEndedAt = now;
+      if (!this.config.autoStartHands || table.currentPhase !== 'idle') continue;
+      // Paced per table. Sharing one timestamp would let a busy table starve a quiet one of
+      // its turn to deal.
+      if (now - (this.lastHandEndedAt.get(tableId) ?? 0) >= this.config.handIntervalMs) {
+        if (table.startHand()) this.lastHandEndedAt.set(tableId, now);
       }
     }
     void this.drainToLedger();
@@ -291,7 +353,7 @@ export class ClawrollServer {
       // can replay it and nobody can verify it, which is worse than a settlement that is
       // merely late, since that one at least retries.
       if (this.archive) {
-        for (const record of this.table.drainHandRecords()) {
+        for (const record of [...this.tables.values()].flatMap((t) => t.drainHandRecords())) {
           try {
             await this.archive.record(record);
           } catch (error) {
@@ -302,18 +364,23 @@ export class ClawrollServer {
 
       if (this.bankroll === null) return;
       // Anything held over from a failed pass goes first, so ordering is preserved.
-      const events = [...this.undrained.splice(0), ...this.table.drainLedgerEvents()];
+      const events = [
+        ...this.undrained.splice(0),
+        ...[...this.tables.values()].flatMap((t) => t.drainLedgerEvents()),
+      ];
 
       for (const event of events) {
         try {
           if (event.type === 'hand_settled') {
             await this.bankroll.recordSettlement(event);
           } else {
-            await this.bankroll.releaseChips(
-              event.agentId,
-              event.stack,
-              `release:${event.tableId}:${event.agentId}:${this.table.handCount}`,
-            );
+            // The event's own id, not one rebuilt from handCount.
+            //
+            // handCount is 0 until the first hand is dealt and unchanged between hands, so
+            // that key repeated — and a repeated external_ref is silently treated as an
+            // already-posted transaction. The seat was untracked anyway, leaving the chips
+            // in_play with nothing left to describe them.
+            await this.bankroll.releaseChips(event.agentId, event.stack, event.releaseId);
             await this.bankroll.untrackSeat(event.tableId, event.agentId);
           }
         } catch (error) {
@@ -338,9 +405,9 @@ export class ClawrollServer {
     if (path === '/spectate') {
       this.connections.set(socket, { socket, agent: null, tokens: 0, lastRefill: Date.now() });
       socket.on('close', () => this.connections.delete(socket));
-      // Spectators get the current picture immediately so a page load is not blank
-      // until the next hand starts.
-      this.write(socket, this.table.tableState());
+      // Spectators get the current picture of every table immediately, so a page load is
+      // not blank until the next hand starts — and so the client can offer a choice.
+      for (const table of this.tables.values()) this.write(socket, table.tableState());
       return;
     }
 
@@ -371,7 +438,8 @@ export class ClawrollServer {
       displayName: agent.displayName,
       serverTime: Date.now(),
     });
-    this.write(socket, this.table.tableState());
+    // Every table, so an agent can see where there is room before asking to sit.
+    for (const table of this.tables.values()) this.write(socket, table.tableState());
   }
 
   private onClose(socket: WebSocket, agent: AgentRecord): void {
@@ -380,7 +448,8 @@ export class ClawrollServer {
       this.agentSockets.delete(agent.agentId);
       // Mid-hand this only marks the seat; the runtime removes it at settlement so the
       // chips already in the pot stay there.
-      this.table.unseat(agent.agentId);
+      this.tableOf(agent.agentId)?.unseat(agent.agentId);
+      this.agentTable.delete(agent.agentId);
     }
   }
 
@@ -406,13 +475,13 @@ export class ClawrollServer {
       case 'join_table':
         // Fire and forget: seating now needs a database round trip, and the message loop
         // must not block behind it. Failures come back to the agent as an `error`.
-        void this.handleJoin(socket, agentId, displayName, message.buyIn, message.seat);
+        void this.handleJoin(socket, agentId, displayName, message.tableId, message.buyIn, message.seat);
         break;
       case 'client_seed':
-        this.table.submitSeed(agentId, message.handId, message.seed);
+        this.tableOf(agentId)?.submitSeed(agentId, message.handId, message.seed);
         break;
       case 'action':
-        this.table.submitAction(agentId, {
+        this.tableOf(agentId)?.submitAction(agentId, {
           handId: message.handId,
           requestId: message.requestId,
           action: message.action,
@@ -420,7 +489,8 @@ export class ClawrollServer {
         });
         break;
       case 'leave_table':
-        this.table.unseat(agentId);
+        this.tableOf(agentId)?.unseat(agentId);
+        this.agentTable.delete(agentId);
         break;
       case 'ping':
         this.write(socket, { type: 'pong', nonce: message.nonce, serverTime: Date.now() });
@@ -439,20 +509,38 @@ export class ClawrollServer {
     socket: WebSocket,
     agentId: string,
     displayName: string,
+    tableId: string,
     buyIn: number,
     preferredSeat?: number,
   ): Promise<void> {
+    const table = this.tables.get(tableId);
+    if (!table) {
+      this.write(socket, {
+        type: 'error',
+        code: 'unknown_table',
+        message: `no table "${tableId}" here; this room serves ${[...this.tables.keys()].join(', ')}`,
+      });
+      return;
+    }
+
     try {
       if (this.bankroll) {
-        await this.bankroll.reserveBuyIn(agentId, this.config.table.tableId, buyIn);
+        await this.bankroll.reserveBuyIn(agentId, tableId, buyIn);
       }
+
+      // Recorded *before* seating, because `seat()` broadcasts the new table state itself —
+      // and `broadcastFrom` only delivers a table's messages to agents known to be at it. Set
+      // this afterwards and the one message telling an agent it sat down is the one message
+      // filtered away from it, which the SDK reads as "still not seated".
+      this.agentTable.set(agentId, tableId);
 
       const result =
         preferredSeat !== undefined
-          ? this.table.seat(agentId, displayName, buyIn, preferredSeat)
-          : this.table.seat(agentId, displayName, buyIn);
+          ? table.seat(agentId, displayName, buyIn, preferredSeat)
+          : table.seat(agentId, displayName, buyIn);
 
       if (!result.ok) {
+        this.agentTable.delete(agentId);
         if (this.bankroll) {
           await this.bankroll.releaseChips(agentId, buyIn, `join-failed:${agentId}:${Date.now()}`);
         }
@@ -461,7 +549,7 @@ export class ClawrollServer {
       }
 
       if (this.bankroll) {
-        await this.bankroll.trackSeat(this.config.table.tableId, agentId, result.seat, buyIn);
+        await this.bankroll.trackSeat(tableId, agentId, result.seat, buyIn);
       }
     } catch (error) {
       this.write(socket, {
@@ -492,8 +580,31 @@ export class ClawrollServer {
     if (socket) this.write(socket, message);
   }
 
-  private broadcast(message: ServerMessage): void {
-    for (const socket of this.connections.keys()) this.write(socket, message);
+  /**
+   * Send a table's public message to everyone entitled to it.
+   *
+   * Spectators get every table — they are watching a room, and the client picks which one to
+   * render. Agents get only the table they are sitting at, because the SDK treats a
+   * `table_state` it does not appear in as proof it has been unseated, and would try to buy
+   * in again every time another table moved.
+   */
+  /**
+   * The table an agent is sitting at, or `null` if it is not seated anywhere.
+   *
+   * Actions arrive on a socket and name a hand, not a table, so this is the only way to know
+   * which runtime should judge them once a room serves more than one.
+   */
+  private tableOf(agentId: string): TableRuntime | null {
+    const tableId = this.agentTable.get(agentId);
+    return tableId === undefined ? null : (this.tables.get(tableId) ?? null);
+  }
+
+  private broadcastFrom(tableId: string, message: ServerMessage): void {
+    for (const connection of this.connections.values()) {
+      const agentId = connection.agent?.agentId;
+      if (agentId !== undefined && this.agentTable.get(agentId) !== tableId) continue;
+      this.write(connection.socket, message);
+    }
   }
 
   private write(socket: WebSocket, message: ServerMessage): void {

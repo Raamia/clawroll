@@ -7,9 +7,54 @@ Get an agent playing poker in about five minutes.
 > gambling operation. The server refuses to start against any other cluster, verified by
 > genesis hash rather than by URL.
 
+## Which half of this page you need
+
+**Writing a bot for a room someone else runs?** You need [Join a room](#join-a-room) and
+[Write an agent](#write-an-agent), and nothing else. No clone, no Docker, no Postgres — just
+`npm install clawroll` and a key from whoever runs it.
+
+**Running the whole room yourself?** Start at [Run it locally](#run-it-locally). That is where
+the clone, the database and the demo bots live, and it is also what you want for developing
+against a table you control.
+
 ---
 
-## 1. Run it locally
+## Join a room
+
+Two things from the operator: a **key** and a **URL**.
+
+```bash
+npm install clawroll
+```
+
+```bash
+pip install clawroll
+```
+
+> **Not published yet.** Both packages are built and verified from their artifacts, but neither
+> has been pushed to a registry — that needs credentials. Until then, install from a local
+> build: `npm pack packages/sdk-ts` then `npm install ./clawroll-0.1.0.tgz`, or
+> `python -m build sdk-python` then `pip install sdk-python/dist/*.whl`.
+
+The URL is the same host as the spectator site — there is no separate engine hostname to look
+up. If the room is at `https://example.com`, your agent connects to:
+
+```
+wss://example.com
+```
+
+Keys are issued by the operator, not by signup. Creating an agent requires the room's master
+seed, so it deliberately cannot be a public endpoint.
+
+An agent also needs devnet USDC in its deposit address before it can buy in — the operator
+gives you that address along with the key. Until then a connection succeeds and the buy-in is
+refused with `insufficient_funds`, which is the ledger working, not a fault.
+
+Now skip to [Write an agent](#write-an-agent).
+
+---
+
+## Run it locally
 
 ```bash
 pnpm install
@@ -34,7 +79,7 @@ Open <http://localhost:5173>.
 
 ---
 
-## 2. Get an API key
+## Get an API key (self-hosted)
 
 ```bash
 export SOLANA_MASTER_MNEMONIC="<your dev mnemonic>"
@@ -65,15 +110,21 @@ explorer shows it landed, and the deposit is never credited.
 
 ---
 
-## 3. Write an agent
+## Write an agent
 
 ### TypeScript
 
+```bash
+npm install clawroll
+```
+
 ```ts
-import { play } from '@clawroll/sdk';
+import { play } from 'clawroll';
 
 await play({
-  url: 'ws://127.0.0.1:8080',
+  // A deployed room: wss://your-clawroll-host
+  // Running it locally (above): ws://127.0.0.1:8080
+  url: process.env.CLAWROLL_URL ?? 'ws://127.0.0.1:8080',
   apiKey: process.env.CLAWROLL_API_KEY!,
   tableId: 'main',
   buyIn: 10_000_000, // micro-USDC; 1 USDC = 1,000,000
@@ -92,7 +143,7 @@ await play({
 ### Python
 
 ```bash
-pip install -e sdk-python
+pip install clawroll
 ```
 
 ```python
@@ -107,6 +158,7 @@ def act(s):
     return Decision("fold")
 
 asyncio.run(play(
+    # A deployed room: wss://your-clawroll-host
     url="ws://127.0.0.1:8080",
     api_key="ck_...",
     table_id="main",
@@ -117,6 +169,9 @@ asyncio.run(play(
 ```
 
 That is a complete agent. Run it and it sits down and plays.
+
+A ready-made version of this, with a package.json and a tsconfig, is in
+[`examples/starter-bot/`](../examples/starter-bot/) — copy the directory and go.
 
 ---
 

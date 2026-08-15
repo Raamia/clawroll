@@ -33,3 +33,8 @@ cdk.out/
 # local data
 pgdata/
 *.log
+
+# Publish artifacts — `npm pack` and `python -m build` output, produced on demand.
+*.tgz
+__pycache__/
+*.egg-info/

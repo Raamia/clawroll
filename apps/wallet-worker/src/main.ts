@@ -15,6 +15,7 @@
 import { Connection, Keypair } from '@solana/web3.js';
 import { Ledger, createSql, migrate } from '@clawroll/db';
 import { loadMasterMnemonic } from './master-seed.js';
+import { Rebalancer } from './rebalance.js';
 import {
   ClusterUnreachableError,
   assertDevnet,
@@ -96,6 +97,21 @@ async function main(): Promise<void> {
             `[clawroll] deposits credited=${summary.depositsCredited} ` +
               `replays=${summary.replaysIgnored} failures=${summary.failures.length}`,
           );
+          // Print why, not just how many.
+          //
+          // `ScanSummary` has carried a reason per failure since it was written and nothing
+          // ever logged it, so a scanner failing every cycle produced `failures=1` forever
+          // and no way to find out what. A deposit that silently never credits is the worst
+          // failure mode in this system; a count with no cause is barely better than silence.
+          //
+          // One line per failure, capped, because a broken RPC endpoint fails on every
+          // address every fifteen seconds and would otherwise bury everything else.
+          for (const failure of summary.failures.slice(0, 5)) {
+            console.error(`[clawroll]   ${failure.signature}: ${failure.reason}`);
+          }
+          if (summary.failures.length > 5) {
+            console.error(`[clawroll]   … and ${summary.failures.length - 5} more`);
+          }
         }
 
         for (const withdrawal of await withdrawals.pending()) {
@@ -125,6 +141,48 @@ async function main(): Promise<void> {
 
   void loop();
   console.log(`[clawroll] wallet worker running, scanning every ${scanIntervalMs}ms`);
+
+  // Keeping the house bots in the game.
+  //
+  // Lives here rather than in the bot fleet because this is the process that owns money
+  // movement and has the database; the fleet is a client and should stay one. Off unless a
+  // floor is configured, so a room with no house bots runs exactly as before.
+  //
+  // Ten minutes is deliberately slow. A bot that busts re-buys from its own bankroll and
+  // keeps playing; this only matters once the bankroll itself is gone, which is a slow
+  // process. Running it often would mostly be querying to find nothing to do.
+  const rebalanceFloor = number('REBALANCE_FLOOR_MICROS', 0);
+  if (rebalanceFloor > 0) {
+    const rebalancer = new Rebalancer(sql, ledger, {
+      floorMicros: rebalanceFloor,
+      targetMicros: number('REBALANCE_TARGET_MICROS', rebalanceFloor * 4),
+    });
+    const rebalanceIntervalMs = number('REBALANCE_INTERVAL_MS', 600_000);
+
+    const rebalanceLoop = async () => {
+      while (running) {
+        try {
+          const result = await rebalancer.runOnce();
+          for (const t of result.transfers) {
+            // Logged individually. This moves somebody's chips, so it should never be
+            // something you have to go digging in the ledger to discover happened.
+            console.log(
+              `[clawroll] rebalance ${(t.amountMicros / 1_000_000).toFixed(2)} USDC ` +
+                `${t.from} → ${t.to}`,
+            );
+          }
+        } catch (error) {
+          console.error(`[clawroll] rebalance failed: ${(error as Error).message}`);
+        }
+        await new Promise((resolve) => setTimeout(resolve, rebalanceIntervalMs));
+      }
+    };
+    void rebalanceLoop();
+    console.log(
+      `[clawroll] rebalancing house bots below ${(rebalanceFloor / 1_000_000).toFixed(2)} USDC ` +
+        `every ${rebalanceIntervalMs}ms`,
+    );
+  }
 
   const shutdown = async (signal: string) => {
     console.log(`[clawroll] ${signal} received, shutting down`);

@@ -4,6 +4,14 @@
     "target": "ES2023",
     "lib": ["ES2023"],
     "module": "NodeNext",
+    // Resolve workspace packages to their source, not their build output.
+    //
+    // `clawroll` publishes `main`/`types` pointing at `dist/`, which only exists after a
+    // build — so in-repo TypeScript could only resolve it on a machine that happened to have
+    // built it already. A fresh clone or a Docker build, where `dist` is absent by design,
+    // failed with "cannot find module 'clawroll'". The package's `development` export
+    // condition points at `src`; this is what makes TypeScript honour it.
+    "customConditions": ["development"],
     "moduleResolution": "NodeNext",
 
     "strict": true,

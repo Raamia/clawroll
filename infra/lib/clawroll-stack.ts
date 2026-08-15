@@ -103,6 +103,22 @@ export class ClawrollStack extends Stack {
     });
     masterSeedResource.applyRemovalPolicy(RemovalPolicy.RETAIN);
 
+    // The house bots' API keys, empty until they have been registered.
+    //
+    // Empty on purpose and fetched at runtime, not injected: the bots cannot exist before the
+    // room they play in is deployed, so a secret ECS had to resolve at container start would
+    // make the first deploy impossible. Same shape as the master seed, same way out.
+    const botKeysResource = new secretsmanager.CfnSecret(this, 'BotKeys', {
+      description: 'House bot API keys as "tableId:apiKey,…" — populate after registering them',
+      kmsKeyId: key.keyArn,
+    });
+    botKeysResource.applyRemovalPolicy(RemovalPolicy.RETAIN);
+    const botKeys = secretsmanager.Secret.fromSecretCompleteArn(
+      this,
+      'BotKeysRef',
+      botKeysResource.ref,
+    );
+
     const masterSeed = secretsmanager.Secret.fromSecretCompleteArn(
       this,
       'SolanaMasterSeedRef',
@@ -283,6 +299,11 @@ export class ClawrollStack extends Stack {
       removalPolicy: RemovalPolicy.RETAIN,
     });
 
+    const botsLogs = new logs.LogGroup(this, 'BotsLogs', {
+      retention: logs.RetentionDays.ONE_WEEK,
+      removalPolicy: RemovalPolicy.DESTROY,
+    });
+
     const workerTask = new ecs.FargateTaskDefinition(this, 'WalletWorkerTask', {
       cpu: 256,
       memoryLimitMiB: 512,
@@ -306,7 +327,21 @@ export class ClawrollStack extends Stack {
       // Passing the ARN turns "not set yet" into a state the worker can wait in rather than
       // a failure to launch, so the deploy completes and the operator populates the secret
       // afterwards with no redeploy.
-      environment: { ...commonEnvironment, MASTER_SEED_SECRET_ARN: masterSeedResource.ref },
+      environment: {
+        ...commonEnvironment,
+        MASTER_SEED_SECRET_ARN: masterSeedResource.ref,
+        // Keeps the house bots in the game.
+        //
+        // With no rake the chips are conserved, but they still concentrate: variance ends in
+        // gambler's ruin, and unequal strategies drift there faster. Without this the tables
+        // eventually go quiet, and the first anyone knows is opening the site and finding
+        // nobody playing.
+        //
+        // Chips are moved between house bots, never granted — see `rebalance.ts` for why
+        // that distinction is not cosmetic. A floor of zero switches it off.
+        REBALANCE_FLOOR_MICROS: String(2_000_000),
+        REBALANCE_TARGET_MICROS: String(8_000_000),
+      },
       secrets: databaseSecrets,
       logging: ecs.LogDrivers.awsLogs({ streamPrefix: 'wallet-worker', logGroup: workerLogs }),
     });
@@ -339,6 +374,66 @@ export class ClawrollStack extends Stack {
 
     database.connections.allowDefaultPortFrom(engine.service, 'engine');
     database.connections.allowDefaultPortFrom(worker, 'wallet worker');
+
+    // -----------------------------------------------------------------------
+    // House bots
+    // -----------------------------------------------------------------------
+
+    /**
+     * The bots that keep the tables busy.
+     *
+     * A separate service from the engine, deliberately. The engine is the dealer and has to
+     * stay impartial; if the same process decided how the players bet, "the house runs the
+     * bots" would stop describing who pays for the compute and start being a reason to
+     * distrust every hand. On the far side of the same public WebSocket a stranger uses, they
+     * know exactly what a stranger's bot knows.
+     *
+     * It also means the fleet can be restarted or switched off without touching a dealer that
+     * is holding live hands.
+     */
+    const botsTask = new ecs.FargateTaskDefinition(this, 'BotsTask', {
+      cpu: 256,
+      memoryLimitMiB: 512,
+      runtimePlatform: { cpuArchitecture: ecs.CpuArchitecture.ARM64 },
+    });
+    botsTask.addContainer('bots', {
+      image: ecs.ContainerImage.fromAsset('..', {
+        file: 'Dockerfile',
+        buildArgs: { SERVICE: 'bots' },
+      }),
+      environment: {
+        NODE_ENV: 'production',
+        // Straight to the load balancer. These bots are inside the VPC, so routing them out
+        // through CloudFront and back would add latency and cost for no benefit — the TLS
+        // that matters is for agents crossing the public internet.
+        CLAWROLL_URL: `ws://${engine.loadBalancer.loadBalancerDnsName}`,
+        BOT_KEYS_SECRET_ARN: botKeysResource.ref,
+        // Small relative to a bot's bankroll, on purpose.
+        //
+        // A buy-in a bot cannot afford is a seat that stays empty — and it fails quietly,
+        // because "insufficient funds" is a correct answer that looks like a bug from the
+        // outside. Sized so a bot can lose several buy-ins before it needs the rebalancer,
+        // which is what keeps a table full rather than merely solvent.
+        BOT_BUY_IN_MICROS: String(2_000_000),
+      },
+      logging: ecs.LogDrivers.awsLogs({ streamPrefix: 'bots', logGroup: botsLogs }),
+    });
+    botKeys.grantRead(botsTask.taskRole);
+    key.grantDecrypt(botsTask.taskRole);
+
+    const bots = new ecs.FargateService(this, 'Bots', {
+      cluster,
+      desiredCount: 1,
+      vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
+      circuitBreaker: { rollback: true },
+      // One fleet. Two would seat every bot twice, and the second copy of an agent replaces
+      // the first's socket — they would fight over the same seats indefinitely.
+      minHealthyPercent: 0,
+      maxHealthyPercent: 100,
+      taskDefinition: botsTask,
+    });
+    // Silences an unused-variable complaint while keeping the handle for future wiring.
+    void bots;
 
     // -----------------------------------------------------------------------
     // Spectator app
@@ -448,6 +543,10 @@ export class ClawrollStack extends Stack {
     // done from a laptop, and without these outputs it could not be done at all. Running the
     // existing worker task definition with an overridden command keeps registration inside
     // the VPC without a bastion, a public database, or a second copy of the seed.
+    new CfnOutput(this, 'BotKeysSecretArn', {
+      value: botKeysResource.ref,
+      description: 'Put "tableId:apiKey,…" here after registering the house bots',
+    });
     new CfnOutput(this, 'ClusterName', {
       value: cluster.clusterName,
       description: 'For running one-off tasks',

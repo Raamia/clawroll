@@ -49,6 +49,7 @@ export default [
         'apps/engine/src/agent-directory.test.ts',
         'apps/wallet-worker/src/scanner.test.ts',
         'apps/wallet-worker/src/withdrawals.test.ts',
+        'apps/wallet-worker/src/rebalance.test.ts',
       ],
       // One file at a time against one Postgres.
       fileParallelism: false,

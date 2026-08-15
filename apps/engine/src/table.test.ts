@@ -170,6 +170,55 @@ describe('seating', () => {
   });
 });
 
+describe('every seat release is uniquely identifiable', () => {
+  let h: Harness;
+  beforeEach(() => {
+    h = new Harness();
+  });
+
+  it('gives repeated sit-and-leave cycles distinct release ids', () => {
+    // This is the shape that lost 20 USDC on the deployed room, and it needs no hand to be
+    // dealt at all — which is precisely why it went unnoticed.
+    //
+    // The release ref used to be built at the call site as
+    // `release:<table>:<agent>:<handCount>`. handCount is 0 until the first hand and constant
+    // between hands, so an agent sitting and leaving twice produced the identical ref twice.
+    // The ledger treats a repeated external_ref as an already-posted transaction — correctly —
+    // so the second release was silently swallowed while the seat was untracked anyway. The
+    // chips stayed in_play with nothing left pointing at them.
+    //
+    // Nothing throws in that sequence. Only the balance is wrong, and only later.
+    for (let i = 0; i < 3; i++) {
+      h.table.seat('bot0', 'Bot 0', 10_000);
+      h.table.unseat('bot0');
+    }
+
+    const releases = h.table
+      .drainLedgerEvents()
+      .filter((e): e is Extract<typeof e, { type: 'seat_released' }> => e.type === 'seat_released');
+
+    expect(releases).toHaveLength(3);
+    expect(new Set(releases.map((r) => r.releaseId)).size).toBe(3);
+    // And each carries the chips it is returning, so a duplicate id would double-credit
+    // rather than merely lose one.
+    for (const release of releases) expect(release.stack).toBe(10_000);
+  });
+
+  it('keeps ids distinct across different agents leaving together', () => {
+    h.table.seat('bot0', 'Bot 0', 10_000);
+    h.table.seat('bot1', 'Bot 1', 10_000);
+    h.table.unseat('bot0');
+    h.table.unseat('bot1');
+
+    const ids = h.table
+      .drainLedgerEvents()
+      .filter((e) => e.type === 'seat_released')
+      .map((e) => (e as { releaseId: string }).releaseId);
+
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+});
+
 describe('hand start and the fairness ordering', () => {
   it('publishes the commitment before any seed is collected', () => {
     // This ordering IS the fairness guarantee. If the server could see client entropy

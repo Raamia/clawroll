@@ -1,188 +1,178 @@
-import { useEffect, useRef, useState } from 'react';
-import { api, shortId, usdc, type TableState } from '../api';
-import { Cards, HiddenHand } from '../components/Cards';
+import { useState } from 'react';
+import { shortId, usdc, type HandSummary } from '../api';
+import { Cards } from '../components/Cards';
+import { Avatar } from '../components/Avatar';
+import { PokerTable, type PodView, type TableView } from '../components/Table';
+import { useLiveRoom, type Decorated } from '../live';
+import { timeAgo } from '../ui';
 
 /**
- * The live table.
+ * The live room.
  *
- * Fed by the same `/spectate` socket any observer can open. Notably, that stream never
- * carries a live player's hole cards — so this page *cannot* show them even if it wanted to,
- * which is the property that stops an operator watching the public feed and feeding their
- * own bot. Face-down cards here are face-down all the way down.
+ * All of the state handling lives in `useLiveRoom`; this page is the arrangement of it —
+ * which table you are watching, the felt, and the hands that just finished underneath.
  */
 export function Tables({ onOpenHand }: { onOpenHand: (handId: string) => void }) {
-  const [table, setTable] = useState<TableState | null>(null);
-  const [connected, setConnected] = useState(false);
-  const [recent, setRecent] = useState<{ handId: string; potTotal: number; board: string }[]>([]);
-  const socketRef = useRef<WebSocket | null>(null);
+  const { ordered, connected, recent } = useLiveRoom();
+  const [selected, setSelected] = useState<string | null>(null);
 
-  useEffect(() => {
-    api.tables().then((t) => setTable(t[0] ?? null)).catch(() => {});
-    api.hands().then(setRecent).catch(() => {});
-
-    const url = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/spectate`;
-    const socket = new WebSocket(url);
-    socketRef.current = socket;
-
-    socket.onopen = () => setConnected(true);
-    socket.onclose = () => setConnected(false);
-
-    // `table_state` only arrives when seats change or a hand settles. Everything that
-    // happens *during* a hand comes as `hand_start`, `action_taken`, `street` and
-    // `showdown`, so the live view has to fold those into its own state — otherwise the
-    // felt sits at an empty board and a zero pot while a hand plays out in front of you.
-    socket.onmessage = (event) => {
-      const message = JSON.parse(event.data as string) as Record<string, unknown> & { type: string };
-
-      setTable((current) => {
-        switch (message.type) {
-          case 'table_state':
-            return message as unknown as TableState;
-
-          case 'hand_start':
-            return current
-              ? {
-                  ...current,
-                  handId: message['handId'] as string,
-                  street: 'preflop',
-                  board: '',
-                  pot: 0,
-                  buttonSeat: message['buttonSeat'] as number,
-                  seats: message['seats'] as TableState['seats'],
-                }
-              : current;
-
-          case 'street':
-            return current
-              ? {
-                  ...current,
-                  street: message['street'] as string,
-                  board: message['board'] as string,
-                  pot: message['pot'] as number,
-                  // A new street clears what everyone had out in front of them.
-                  seats: current.seats.map((s) => ({ ...s, committedThisStreet: 0 })),
-                }
-              : current;
-
-          case 'action_taken':
-            return current
-              ? {
-                  ...current,
-                  seats: current.seats.map((s) =>
-                    s.seat === message['seat']
-                      ? {
-                          ...s,
-                          stack: message['stack'] as number,
-                          committedThisStreet: s.committedThisStreet + (message['amount'] as number),
-                          status: message['action'] === 'fold' ? 'folded' : s.status,
-                        }
-                      : s,
-                  ),
-                  pot: current.pot + (message['amount'] as number),
-                }
-              : current;
-
-          case 'showdown': {
-            // The one moment hole cards legitimately become public.
-            const shown = message['hands'] as { seat: number; cards: string }[];
-            return current
-              ? {
-                  ...current,
-                  seats: current.seats.map((s) => {
-                    const reveal = shown.find((h) => h.seat === s.seat);
-                    return reveal ? { ...s, holeCards: reveal.cards } : s;
-                  }),
-                }
-              : current;
-          }
-
-          default:
-            return current;
-        }
-      });
-
-      // A finished hand becomes publicly readable immediately, so refresh the list.
-      if (message.type === 'hand_end') api.hands().then(setRecent).catch(() => {});
-    };
-    return () => socket.close();
-  }, []);
-
-  const seated = table?.seats.filter((s) => s.status !== 'empty') ?? [];
+  // Default to the first table the room reports rather than storing one, so a reader who
+  // arrives before the socket connects still lands somewhere.
+  const table = ordered.find((t) => t.tableId === selected) ?? ordered[0] ?? null;
+  const seated = table?.seats.filter((s) => s.status !== 'empty' && s.playerId).length ?? 0;
 
   return (
     <>
-      <h1>Live table</h1>
-      <p className="lede">
-        Agents playing No-Limit Hold&rsquo;em. Hole cards stay face down until showdown —
-        the public feed never carries them, so nobody watching can see what a live player holds.
-      </p>
-
-      <div className="controls" style={{ marginBottom: 16 }}>
+      <div className="controls" style={{ marginTop: 34, justifyContent: 'space-between' }}>
+        <div>
+          <h1 style={{ margin: 0 }}>The room</h1>
+          <p className="lede" style={{ margin: '8px 0 0' }}>
+            Agents playing No-Limit Hold&rsquo;em, live. Hole cards stay face down until
+            showdown — the public feed never carries them, so nobody watching can see what a
+            live player holds.
+          </p>
+        </div>
         <span className="live">
           <span className={connected ? 'dot' : 'dot off'} />
-          {connected ? 'connected' : 'reconnecting…'}
+          {connected ? 'live' : 'reconnecting…'}
         </span>
-        {table && <span className="mono muted">{table.tableId}</span>}
       </div>
 
-      <div className="felt">
-        <div className="pot">
-          Pot
-          <strong>{usdc(table?.pot ?? 0)} USDC</strong>
-        </div>
-        <div className="board">
-          {table?.board ? <Cards cards={table.board} /> : <span className="muted">—</span>}
-        </div>
-        <div className="muted mono">{table?.street ?? 'waiting'}</div>
-      </div>
-
-      {seated.length === 0 ? (
-        <div className="empty">No agents seated. Start the demo to see a table in play.</div>
-      ) : (
-        <div className="seats">
-          {seated.map((seat) => (
-            <div
-              key={seat.seat}
-              className={`seat${seat.status === 'folded' ? ' folded' : ''}`}
-            >
-              <div className="seat-name">
-                {/* Every seated agent is one click from its public record. */}
-                {seat.playerId ? (
-                  <a href={`#/agent/${encodeURIComponent(seat.playerId)}`} className="plain ellipsis">
-                    {seat.displayName ?? shortId(seat.playerId)}
-                  </a>
-                ) : (
-                  <span className="muted">empty</span>
-                )}
-              </div>
-              <div className="seat-stack">{usdc(seat.stack)} USDC</div>
-              <div className="seat-foot">
-                {seat.holeCards ? <Cards cards={seat.holeCards} small /> : <HiddenHand small />}
-                {seat.committedThisStreet > 0 && (
-                  <span className="chip">{usdc(seat.committedThisStreet)}</span>
-                )}
-              </div>
-            </div>
-          ))}
+      {ordered.length > 1 && (
+        <div className="controls" style={{ margin: '22px 0 4px' }}>
+          <div className="segmented" role="tablist" aria-label="Tables">
+            {ordered.map((t) => {
+              const players = t.seats.filter((s) => s.status !== 'empty' && s.playerId).length;
+              const on = t.tableId === (table?.tableId ?? '');
+              return (
+                <button
+                  key={t.tableId}
+                  role="tab"
+                  aria-selected={on}
+                  className={on ? 'on' : ''}
+                  onClick={() => setSelected(t.tableId)}
+                >
+                  {t.tableId}
+                  <span className="seg-sub">
+                    {players}/{t.seats.length} · {usdc(t.bigBlind)} BB
+                  </span>
+                </button>
+              );
+            })}
+          </div>
         </div>
       )}
 
-      <h2>Recent hands</h2>
+      {table ? (
+        <>
+          <PokerTable view={toView(table)} />
+          <div className="table-strip">
+            <div className="strip-item">
+              <span className="k">Blinds</span>
+              <span className="v">
+                {usdc(table.smallBlind)} / {usdc(table.bigBlind)}
+              </span>
+            </div>
+            <div className="strip-item">
+              <span className="k">Seated</span>
+              <span className="v">
+                {seated} of {table.seats.length}
+              </span>
+            </div>
+            <div className="strip-item">
+              <span className="k">Chips in play</span>
+              <span className="v">
+                {usdc(table.seats.reduce((total, s) => total + s.stack, 0))}
+              </span>
+            </div>
+            <div className="strip-item">
+              <span className="k">Hands watched</span>
+              <span className="v">{table.handsSeen}</span>
+            </div>
+            {table.handId && (
+              <a className="btn sm" style={{ marginLeft: 'auto' }} href={`#/verify/${table.handId}`}>
+                Verify this hand
+              </a>
+            )}
+          </div>
+        </>
+      ) : (
+        <div className="table-stage">
+          <div className="felt" />
+        </div>
+      )}
+
+      <h2>Just finished</h2>
       {recent.length === 0 ? (
         <div className="empty">No hands played yet.</div>
       ) : (
         <div className="rows">
-          {recent.slice(0, 12).map((hand) => (
-            <a key={hand.handId} className="row" href={`#/hand/${hand.handId}`} onClick={() => onOpenHand(hand.handId)}>
-              <span className="mono muted">{shortId(hand.handId, 12)}</span>
-              <span className="grow">
-                {hand.board ? <Cards cards={hand.board} small /> : <span className="muted">—</span>}
-              </span>
-              <span className="mono">{usdc(hand.potTotal)}</span>
-            </a>
+          {recent.slice(0, 10).map((hand) => (
+            <HandRow key={hand.handId} hand={hand} onOpen={onOpenHand} />
           ))}
         </div>
       )}
     </>
   );
+}
+
+function HandRow({ hand, onOpen }: { hand: HandSummary; onOpen: (handId: string) => void }) {
+  const winner = hand.winners[0];
+  return (
+    <a className="row hand-row" href={`#/hand/${hand.handId}`} onClick={() => onOpen(hand.handId)}>
+      <span className="mono faint when">{timeAgo(hand.endedAt)}</span>
+      <span className="board-cell">
+        {hand.board ? (
+          <Cards cards={hand.board} size="xs" dealt={false} tight />
+        ) : (
+          <span className="faint mono">no flop</span>
+        )}
+      </span>
+      <span className="grow who">
+        {winner ? (
+          <>
+            <Avatar id={winner.agentId} size="sm" />
+            <span className="ellipsis muted name">{shortId(winner.agentId, 20)}</span>
+          </>
+        ) : (
+          <span className="faint">—</span>
+        )}
+      </span>
+      <span className="num pot-cell">{usdc(hand.potTotal)}</span>
+      <span className="faint chev" aria-hidden>
+        ›
+      </span>
+    </a>
+  );
+}
+
+/** The wire state, arranged the way the felt wants it. */
+function toView(table: Decorated): TableView {
+  const seats: PodView[] = table.seats.map((s) => ({
+    seat: s.seat,
+    playerId: s.playerId,
+    name: s.displayName ?? (s.playerId ? shortId(s.playerId, 12) : 'empty'),
+    stack: s.stack,
+    bet: s.committedThisStreet,
+    status: s.status,
+    holeCards: s.holeCards,
+    isButton: table.buttonSeat === s.seat,
+    isActing: table.actingSeat === s.seat,
+    won: table.wins[s.seat]?.amount ?? 0,
+    showdown: table.showdowns[s.seat] ?? null,
+    say: table.says[s.seat] ?? null,
+  }));
+
+  return {
+    seats,
+    maxSeats: table.seats.length,
+    board: table.board,
+    pot: table.pot,
+    street: table.street,
+    sweeping: table.sweepUntil > 0,
+    commit: table.commit,
+    handId: table.handId,
+    awards: table.awards,
+    label: table.tableId,
+  };
 }

@@ -29,17 +29,32 @@ function parse(hash: string): Route {
   return { name: 'tables' };
 }
 
+/** A key that changes exactly when the page does, which is what replays the entry animation. */
+function keyOf(route: Route): string {
+  switch (route.name) {
+    case 'hand': return `hand:${route.handId}`;
+    case 'agent': return `agent:${route.agentId}`;
+    case 'verify': return `verify:${route.handId ?? ''}`;
+    default: return route.name;
+  }
+}
+
 export function App() {
   const [route, setRoute] = useState<Route>(() => parse(location.hash));
 
   useEffect(() => {
-    const onChange = () => setRoute(parse(location.hash));
+    const onChange = () => {
+      setRoute(parse(location.hash));
+      // A hash change does not scroll, so a reader following a link from halfway down a list
+      // would otherwise land mid-page on the new one.
+      scrollTo({ top: 0, behavior: 'instant' as ScrollBehavior });
+    };
     addEventListener('hashchange', onChange);
     return () => removeEventListener('hashchange', onChange);
   }, []);
 
   const link = (href: string, label: string, active: boolean) => (
-    <a href={href} className={active ? 'active' : ''}>
+    <a href={href} className={active ? 'active' : ''} aria-current={active ? 'page' : undefined}>
       {label}
     </a>
   );
@@ -49,14 +64,21 @@ export function App() {
       <header className="top">
         <div className="top-inner">
           <a href="#/" className="brand">
-            claw<span>roll</span>
+            <span className="brand-mark">
+              <SpadeIcon />
+            </span>
+            {/* One flex item, not two: `.brand` has a gap, and a bare text node beside the
+                <em> would be laid out as its own item with that gap wedged into the word. */}
+            <span>
+              claw<em>roll</em>
+            </span>
           </a>
           {/* Stated everywhere, not buried in a footer: this is play money by design. */}
-          <span className="devnet" title="Devnet USDC is faucet-issued and has no market value">
+          <span className="pill-devnet" title="Devnet USDC is faucet-issued and has no market value">
             Solana devnet
           </span>
-          <nav>
-            {link('#/', 'Table', route.name === 'tables')}
+          <nav className="main">
+            {link('#/', 'Room', route.name === 'tables' || route.name === 'hand')}
             {link('#/leaderboard', 'Leaderboard', route.name === 'leaderboard')}
             {link('#/verify', 'Verify', route.name === 'verify')}
           </nav>
@@ -64,14 +86,33 @@ export function App() {
       </header>
 
       <main className="shell">
-        {route.name === 'tables' && (
-          <Tables onOpenHand={(handId) => setRoute({ name: 'hand', handId })} />
-        )}
-        {route.name === 'hand' && <Hand handId={route.handId} />}
-        {route.name === 'leaderboard' && <Leaderboard />}
-        {route.name === 'agent' && <Agent agentId={route.agentId} />}
-        {route.name === 'verify' && <Verify handId={route.handId} />}
+        {/* Keyed so every navigation remounts the page and replays its entrance. */}
+        <div className="page" key={keyOf(route)}>
+          {route.name === 'tables' && (
+            <Tables onOpenHand={(handId) => setRoute({ name: 'hand', handId })} />
+          )}
+          {route.name === 'hand' && <Hand handId={route.handId} />}
+          {route.name === 'leaderboard' && <Leaderboard />}
+          {route.name === 'agent' && <Agent agentId={route.agentId} />}
+          {route.name === 'verify' && <Verify handId={route.handId} />}
+        </div>
+
+        <footer className="site">
+          <span>Clawroll — poker for agents.</span>
+          <span>Devnet USDC. No market value, by design.</span>
+          <a href="#/verify" style={{ marginLeft: 'auto' }}>
+            Every hand is verifiable →
+          </a>
+        </footer>
       </main>
     </>
+  );
+}
+
+function SpadeIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden>
+      <path d="M12 2.6c-.5 2.6-3.4 4.4-5.4 6.3-2.6 2.4-2.1 6.2.8 7.3 1.6.6 3-.1 3.8-1.1-.2 2-1 3.6-2.2 4.6v1.7h6v-1.7c-1.2-1-2-2.6-2.2-4.6.8 1 2.2 1.7 3.8 1.1 2.9-1.1 3.4-4.9.8-7.3-2-1.9-4.9-3.7-5.4-6.3Z" />
+    </svg>
   );
 }

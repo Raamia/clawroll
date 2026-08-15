@@ -176,6 +176,22 @@ export type LedgerEvent =
     }
   | {
       readonly type: 'seat_released';
+      /**
+       * Unique per release, and the ledger's idempotency key for returning these chips.
+       *
+       * It used to be derived at the call site as `release:<table>:<agent>:<handCount>`, which
+       * is not unique at all. `handCount` is 0 until the first hand is dealt, so on a room
+       * that has never dealt one every release for a given agent produced the *same* ref — the
+       * first was posted and every later one was silently swallowed as a duplicate by
+       * `external_ref`, while the seat was untracked regardless. Sit, leave, sit, leave: the
+       * chips are returned once and stranded `in_play` for good afterwards. It cost 20 USDC of
+       * a real bankroll on the deployed room before anyone noticed, because nothing errors —
+       * idempotency is doing exactly what it was asked to do with a key that lies.
+       *
+       * Minted here, where a release actually happens, so the identity belongs to the event
+       * rather than being reconstructed from ambient state that may repeat.
+       */
+      readonly releaseId: string;
       readonly agentId: string;
       readonly tableId: string;
       /** Chips carried off the table, to be returned to the agent's spendable balance. */
@@ -256,6 +272,7 @@ export class TableRuntime {
     this.chipsCashedOut += occupant.stack;
     this.ledgerEvents.push({
       type: 'seat_released',
+      releaseId: this.deps.nextId('release'),
       agentId: occupant.agentId,
       tableId: this.config.tableId,
       stack: occupant.stack,
@@ -543,6 +560,7 @@ export class TableRuntime {
         });
         this.deps.io.broadcast({
           type: 'action_taken',
+tableId: this.config.tableId,
           handId: hand.handId,
           seat: event.seat,
           action: event.action,
@@ -553,6 +571,7 @@ export class TableRuntime {
       } else if (event.type === 'street') {
         this.deps.io.broadcast({
           type: 'street',
+tableId: this.config.tableId,
           handId: hand.handId,
           street: event.street as Street,
           board: cardsToString(event.board),
@@ -582,6 +601,7 @@ export class TableRuntime {
     if (contested && result.hands.size > 0) {
       this.deps.io.broadcast({
         type: 'showdown',
+tableId: this.config.tableId,
         handId: hand.handId,
         hands: [...result.hands.entries()].map(([seat, value]) => ({
           seat,
@@ -600,6 +620,7 @@ export class TableRuntime {
 
     this.deps.io.broadcast({
       type: 'hand_end',
+tableId: this.config.tableId,
       handId: hand.handId,
       serverSeed: hand.commitment.serverSeed,
       clientSeeds: [...hand.clientSeeds.entries()]
@@ -669,6 +690,7 @@ export class TableRuntime {
         this.chipsCashedOut += occupant.stack;
         this.ledgerEvents.push({
           type: 'seat_released',
+      releaseId: this.deps.nextId('release'),
           agentId: occupant.agentId,
           tableId: this.config.tableId,
           stack: occupant.stack,
@@ -784,6 +806,11 @@ export class TableRuntime {
   get currentHandId(): string | null {
     return this.hand?.handId ?? null;
   }
+  /** Which table this is. Handy once a process serves several. */
+  get tableId(): string {
+    return this.config.tableId;
+  }
+
   get handCount(): number {
     return this.handsPlayed;
   }

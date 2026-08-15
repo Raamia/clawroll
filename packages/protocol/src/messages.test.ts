@@ -193,9 +193,9 @@ describe('outbound messages round-trip', () => {
       seedDeadline: 2,
     },
     { type: 'your_cards', handId: 'h1', seat: 0, cards: 'As Kd' },
-    { type: 'street', handId: 'h1', street: 'flop', board: '2h 5s 9c', pot: 300 },
+    { type: 'street', tableId: 't1', handId: 'h1', street: 'flop', board: '2h 5s 9c', pot: 300 },
     {
-      type: 'hand_end',
+      type: 'hand_end', tableId: 't1',
       handId: 'h1',
       serverSeed: 'b'.repeat(64),
       clientSeeds: [{ seat: 0, seed: 'c'.repeat(64) }],

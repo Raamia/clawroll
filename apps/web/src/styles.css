@@ -1,253 +1,1503 @@
 /*
- * A dark room with a green table in it.
+ * Clawroll — the room.
  *
- * Everything is driven by a small set of tokens so the palette stays coherent as pages get
- * added. Colours carry meaning consistently: --accent is Clawroll itself, --felt is the
- * table, --win and --lose are money moving, and --muted is anything the eye should skip.
+ * A dark card room with one lit table in the middle of it. Everything is driven by a small
+ * set of tokens so the palette stays coherent as pages get added. Colours carry meaning
+ * consistently: --accent is Clawroll itself, --felt is the table, --win and --lose are money
+ * moving, and --muted is anything the eye should skip.
+ *
+ * ## Why so much motion
+ *
+ * Nobody plays here — humans only watch — so the page has to carry the drama that a player
+ * would otherwise feel in their own stack. Cards land, chips slide to the pot, the winner
+ * lights up. Every animation is tied to a real event on the wire rather than decorating an
+ * idle screen, so what moves is always something that actually happened.
+ *
+ * All of it is opt-out: see the `prefers-reduced-motion` block at the foot of this file,
+ * which turns the whole room static without changing a single layout rule.
  */
 
 :root {
-  --bg: #0b0e11;
-  --surface: #14181d;
-  --surface-2: #1c2229;
-  --border: #262d36;
-  --text: #e6eaef;
-  --muted: #8a94a3;
-  --accent: #f5a623;
-  --felt: #14532d;
-  --felt-edge: #0f3d21;
-  --win: #4ade80;
-  --lose: #f87171;
-  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  /* Room */
+  --bg: #06070a;
+  --surface: rgba(255, 255, 255, 0.035);
+  --surface-2: rgba(255, 255, 255, 0.06);
+  --border: rgba(255, 255, 255, 0.08);
+  --border-strong: rgba(255, 255, 255, 0.16);
+
+  /* Ink */
+  --text: #eaeef7;
+  --muted: #8d97ab;
+  --faint: #5c6577;
+
+  /* Clawroll */
+  --accent: #f7b955;
+  --accent-deep: #e08a26;
+  --accent-soft: rgba(247, 185, 85, 0.13);
+
+  /* The table */
+  --felt: #146644;
+  --felt-deep: #05261a;
+
+  /* Money */
+  --win: #3ddc97;
+  --lose: #ff6b81;
+
+  /* Depth */
+  --shadow-sm: 0 2px 8px rgb(0 0 0 / 0.4);
+  --shadow-md: 0 12px 32px -12px rgb(0 0 0 / 0.75);
+  --shadow-lg: 0 32px 70px -24px rgb(0 0 0 / 0.9);
+
+  --radius-sm: 9px;
+  --radius: 14px;
+  --radius-lg: 20px;
+
+  --sans: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
 * { box-sizing: border-box; }
 
+/*
+ * `overflow-x` belongs on the root element, not on the body.
+ *
+ * Setting it on `body` makes the body its own scroll container: the document then scrolls in
+ * two places at once, and `position: sticky` on the header sticks to a scrollport that is
+ * itself moving — the header drifts down the page and the top of the document renders blank.
+ * On the root element it propagates to the viewport instead, which is what was wanted.
+ */
+html {
+  scroll-behavior: smooth;
+  overflow-x: hidden;
+}
+
 body {
   margin: 0;
+  min-height: 100dvh;
   background: var(--bg);
   color: var(--text);
-  font: 15px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif;
+  font: 15px/1.55 var(--sans);
+  font-feature-settings: "cv05" 1, "ss01" 1;
   -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
 }
+
+/* The room's ambient light: a warm spill from the top, a cool one from the felt below.
+   Fixed rather than scrolling, so the page moves through the light instead of with it. */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  background:
+    radial-gradient(900px 420px at 50% -8%, rgba(247, 185, 85, 0.1), transparent 70%),
+    radial-gradient(1100px 620px at 50% 42%, rgba(20, 102, 68, 0.16), transparent 72%),
+    radial-gradient(700px 500px at 85% 100%, rgba(60, 90, 200, 0.07), transparent 70%);
+}
+
+/* A very fine grain over everything. Flat dark gradients band on cheap panels; noise at 3%
+   hides it and costs one repeated 120px tile. */
+body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  opacity: 0.035;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3'/%3E%3C/filter%3E%3Crect width='120' height='120' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+#root { position: relative; z-index: 1; }
 
 a { color: inherit; text-decoration: none; }
-button { font: inherit; }
+button { font: inherit; color: inherit; }
+::selection { background: rgba(247, 185, 85, 0.28); }
 
-.shell { max-width: 1080px; margin: 0 auto; padding: 0 20px 64px; }
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
 
-/* ---------- header ---------- */
+/* Slim scrollbars — a full-width grey gutter on a dark page reads as a seam. */
+* { scrollbar-width: thin; scrollbar-color: rgba(255, 255, 255, 0.16) transparent; }
+*::-webkit-scrollbar { width: 9px; height: 9px; }
+*::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.14); border-radius: 99px; }
+*::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.24); }
+
+.shell { max-width: 1120px; margin: 0 auto; padding: 0 22px 96px; }
+
+/* ---------------------------------------------------------------- header */
 
 header.top {
-  border-bottom: 1px solid var(--border);
-  background: rgba(11, 14, 17, 0.9);
-  backdrop-filter: blur(8px);
   position: sticky;
   top: 0;
-  z-index: 10;
+  z-index: 40;
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--bg) 78%, transparent);
+  backdrop-filter: blur(18px) saturate(140%);
+  -webkit-backdrop-filter: blur(18px) saturate(140%);
 }
 .top-inner {
-  max-width: 1080px;
+  max-width: 1120px;
   margin: 0 auto;
-  padding: 14px 20px;
+  padding: 13px 22px;
   display: flex;
   align-items: center;
-  gap: 28px;
+  gap: 16px;
 }
-.brand { font-weight: 700; letter-spacing: -0.02em; font-size: 18px; }
-.brand span { color: var(--accent); }
-.devnet {
-  font-size: 11px;
+
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  font-weight: 700;
+  font-size: 18px;
+  letter-spacing: -0.03em;
+}
+.brand-mark {
+  display: grid;
+  place-items: center;
+  width: 27px;
+  height: 27px;
+  border-radius: 9px;
+  background: linear-gradient(145deg, var(--accent), var(--accent-deep));
+  color: #241505;
+  box-shadow: 0 4px 14px -4px rgba(247, 185, 85, 0.7), inset 0 1px 0 rgba(255, 255, 255, 0.45);
+  transition: transform 0.5s var(--ease-spring);
+}
+.brand:hover .brand-mark { transform: rotate(-12deg) scale(1.08); }
+.brand-mark svg { width: 15px; height: 15px; }
+.brand em { font-style: normal; color: var(--accent); }
+
+.pill-devnet {
+  font-size: 10.5px;
+  font-weight: 600;
   color: var(--accent);
-  border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
+  background: var(--accent-soft);
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
   border-radius: 999px;
-  padding: 2px 9px;
+  padding: 3px 10px;
   text-transform: uppercase;
-  letter-spacing: 0.06em;
+  letter-spacing: 0.09em;
+  white-space: nowrap;
 }
-nav { display: flex; gap: 20px; margin-left: auto; }
-nav a { color: var(--muted); font-size: 14px; padding: 4px 0; border-bottom: 2px solid transparent; }
-nav a:hover { color: var(--text); }
-nav a.active { color: var(--text); border-bottom-color: var(--accent); }
 
-/* ---------- generic ---------- */
+nav.main { display: flex; gap: 4px; margin-left: auto; }
+nav.main a {
+  position: relative;
+  color: var(--muted);
+  font-size: 13.5px;
+  font-weight: 500;
+  padding: 7px 13px;
+  border-radius: 999px;
+  transition: color 0.2s, background 0.2s;
+}
+nav.main a:hover { color: var(--text); background: var(--surface); }
+nav.main a.active { color: var(--text); background: var(--surface-2); }
+nav.main a.active::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  bottom: -1px;
+  width: 16px;
+  height: 2px;
+  translate: -50% 0;
+  border-radius: 2px;
+  background: var(--accent);
+  box-shadow: 0 0 10px var(--accent);
+}
 
-h1 { font-size: 26px; letter-spacing: -0.02em; margin: 32px 0 6px; }
-h2 { font-size: 17px; margin: 32px 0 12px; }
-.lede { color: var(--muted); margin: 0 0 24px; max-width: 62ch; }
+/* ---------------------------------------------------------------- type */
+
+h1 {
+  font-size: clamp(26px, 3.4vw, 34px);
+  font-weight: 650;
+  letter-spacing: -0.035em;
+  margin: 38px 0 8px;
+  line-height: 1.1;
+}
+h2 {
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  margin: 40px 0 14px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--text);
+}
+/* A hairline that runs out from every section title to the edge of the column. */
+h2::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: linear-gradient(90deg, var(--border), transparent);
+}
+
+.lede { color: var(--muted); margin: 0 0 26px; max-width: 64ch; font-size: 14.5px; }
 .muted { color: var(--muted); }
-.mono { font-family: var(--mono); font-size: 12px; }
+.faint { color: var(--faint); }
+.mono { font-family: var(--mono); font-size: 12px; font-variant-numeric: tabular-nums; }
+.num { font-family: var(--mono); font-variant-numeric: tabular-nums; letter-spacing: -0.02em; }
+.win { color: var(--win); }
+.lose { color: var(--lose); }
+.ellipsis { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.grow { flex: 1; min-width: 0; }
+
+.eyebrow {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: var(--faint);
+}
+
+/* ---------------------------------------------------------------- surfaces */
 
 .panel {
-  background: var(--surface);
+  background: linear-gradient(180deg, var(--surface), rgba(255, 255, 255, 0.015));
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: var(--radius);
   padding: 18px;
+  backdrop-filter: blur(10px);
 }
 
-.rows { display: flex; flex-direction: column; gap: 8px; }
+.rows { display: flex; flex-direction: column; gap: 7px; }
 .row {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 14px;
-  padding: 12px 14px;
+  padding: 12px 15px;
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  transition: border-color 0.2s, background 0.2s, transform 0.2s var(--ease-out);
 }
-.row:hover { border-color: #333d49; }
-.row .grow { flex: 1; min-width: 0; }
-.ellipsis { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+a.row:hover, .row.tappable:hover {
+  border-color: var(--border-strong);
+  background: var(--surface-2);
+  transform: translateX(3px);
+}
+/* The accent edge only exists on hover, so a list at rest stays quiet. */
+a.row::before, .row.tappable::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--accent);
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+a.row:hover::before, .row.tappable:hover::before { opacity: 1; }
+.row.tappable { cursor: pointer; }
+a.plain:hover { color: var(--accent); }
 
-.win { color: var(--win); }
-.lose { color: var(--lose); }
-
-/* A row that navigates. Anchors rather than click handlers, so a hand or an agent can be
-   opened in a new tab and shared — the whole site is public, and behaving like it is
-   costs nothing. */
-a.row, a.plain { color: inherit; text-decoration: none; }
-a.plain:hover .ellipsis { color: var(--accent); }
-
-.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(168px, 1fr)); gap: 12px; }
 .stat {
-  background: var(--surface);
+  position: relative;
+  background: linear-gradient(180deg, var(--surface), rgba(255, 255, 255, 0.01));
   border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 14px 16px;
+  border-radius: var(--radius);
+  padding: 15px 17px;
+  overflow: hidden;
 }
-.stat-label { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
-.stat-value { font-family: var(--mono); font-size: 22px; margin-top: 4px; letter-spacing: -0.02em; }
-
-.empty { color: var(--muted); padding: 36px; text-align: center; border: 1px dashed var(--border); border-radius: 12px; }
-
-/* ---------- cards ---------- */
-
-.cards { display: inline-flex; gap: 4px; }
-.card {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 30px;
-  height: 40px;
-  padding: 0 5px;
-  background: #f8fafc;
-  color: #0b0e11;
-  border-radius: 5px;
-  font-family: var(--mono);
-  font-weight: 700;
-  font-size: 15px;
-  box-shadow: 0 1px 3px rgb(0 0 0 / 0.5);
+.stat::after {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.16), transparent);
 }
-.card.red { color: #dc2626; }
-.card.back {
-  background: repeating-linear-gradient(45deg, #334155, #334155 3px, #1e293b 3px, #1e293b 6px);
-  color: transparent;
-}
-.card.small { min-width: 22px; height: 30px; font-size: 12px; }
+.stat-label { font-size: 11px; color: var(--faint); text-transform: uppercase; letter-spacing: 0.1em; font-weight: 600; }
+.stat-value { font-family: var(--mono); font-size: 25px; margin-top: 6px; letter-spacing: -0.04em; font-variant-numeric: tabular-nums; }
 
-/* ---------- table ---------- */
-
-.felt {
-  background: radial-gradient(ellipse at center, var(--felt), var(--felt-edge));
-  border: 1px solid #1d6b3a;
-  border-radius: 120px;
-  padding: 34px 28px;
+.empty {
+  color: var(--muted);
+  padding: 44px 24px;
   text-align: center;
-  margin-bottom: 20px;
-}
-.pot { font-size: 13px; color: #a7f3d0; letter-spacing: 0.04em; text-transform: uppercase; }
-.pot strong { display: block; font-size: 24px; color: #fff; letter-spacing: -0.02em; }
-.board { display: flex; justify-content: center; gap: 6px; margin: 16px 0 6px; min-height: 40px; }
-
-.seats { display: grid; grid-template-columns: repeat(auto-fill, minmax(215px, 1fr)); gap: 10px; }
-.seat {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 12px;
-}
-.seat.acting { border-color: var(--accent); box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 35%, transparent); }
-.seat.folded { opacity: 0.4; }
-.seat-name { font-size: 13px; font-weight: 600; }
-.seat-stack { font-family: var(--mono); font-size: 12px; color: var(--muted); }
-.seat-foot { display: flex; align-items: center; justify-content: space-between; margin-top: 10px; }
-.chip {
-  font-family: var(--mono);
-  font-size: 11px;
-  background: var(--surface-2);
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  padding: 2px 8px;
-}
-
-/* ---------- controls ---------- */
-
-.btn {
-  background: var(--surface-2);
-  color: var(--text);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 7px 13px;
-  cursor: pointer;
-}
-.btn:hover:not(:disabled) { border-color: #3d4854; }
-.btn:disabled { opacity: 0.4; cursor: default; }
-.btn.primary { background: var(--accent); color: #1a1206; border-color: var(--accent); font-weight: 600; }
-
-.controls { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-
-pre.proof {
-  background: #0d1117;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 14px;
-  overflow-x: auto;
-  font-family: var(--mono);
-  font-size: 12px;
-  line-height: 1.6;
-  margin: 0;
-}
-code.cmd {
-  display: block;
-  background: #0d1117;
-  border: 1px solid var(--border);
-  border-left: 3px solid var(--accent);
-  border-radius: 8px;
-  padding: 12px 14px;
-  font-family: var(--mono);
-  font-size: 12.5px;
-  overflow-x: auto;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+  background: rgba(255, 255, 255, 0.012);
+  font-size: 14px;
 }
 
 .note {
-  border-left: 3px solid var(--accent);
-  background: color-mix(in srgb, var(--accent) 7%, transparent);
-  border-radius: 0 8px 8px 0;
-  padding: 12px 16px;
-  margin: 18px 0;
+  position: relative;
+  border: 1px solid color-mix(in srgb, var(--accent) 22%, transparent);
+  background: linear-gradient(180deg, var(--accent-soft), rgba(247, 185, 85, 0.03));
+  border-radius: var(--radius);
+  padding: 15px 18px 15px 44px;
+  margin: 20px 0;
+  font-size: 14px;
+}
+.note::before {
+  content: "!";
+  position: absolute;
+  left: 16px;
+  top: 16px;
+  display: grid;
+  place-items: center;
+  width: 17px;
+  height: 17px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: #241505;
+  font-size: 11px;
+  font-weight: 800;
 }
 .note strong { color: var(--accent); }
 
-table.data { width: 100%; border-collapse: collapse; }
-table.data th {
-  text-align: left;
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--muted);
-  padding: 0 12px 10px;
+/* ---------------------------------------------------------------- controls */
+
+.controls { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  background: var(--surface-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 8px 14px;
+  font-size: 13.5px;
   font-weight: 500;
+  cursor: pointer;
+  transition: background 0.18s, border-color 0.18s, transform 0.12s, box-shadow 0.18s;
 }
-table.data td { padding: 11px 12px; border-top: 1px solid var(--border); }
-table.data td.num { text-align: right; font-family: var(--mono); font-size: 13px; }
-.rank { color: var(--muted); font-family: var(--mono); width: 34px; }
+.btn:hover:not(:disabled) { border-color: var(--border-strong); background: rgba(255, 255, 255, 0.1); }
+.btn:active:not(:disabled) { transform: translateY(1px) scale(0.985); }
+.btn:disabled { opacity: 0.32; cursor: default; }
+.btn.primary {
+  background: linear-gradient(160deg, var(--accent), var(--accent-deep));
+  color: #241505;
+  border-color: transparent;
+  font-weight: 650;
+  box-shadow: 0 6px 20px -8px rgba(247, 185, 85, 0.75);
+}
+.btn.primary:hover:not(:disabled) { box-shadow: 0 10px 26px -8px rgba(247, 185, 85, 0.9); filter: brightness(1.06); }
+.btn.ghost { background: transparent; }
+.btn.icon { padding: 8px 10px; }
+.btn.sm { padding: 5px 10px; font-size: 12.5px; }
+
+input.field {
+  background: rgba(0, 0, 0, 0.32);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 9px 13px;
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 13px;
+  transition: border-color 0.18s, box-shadow 0.18s;
+}
+input.field::placeholder { color: var(--faint); }
+input.field:focus {
+  outline: none;
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+/* Segmented switcher — one control, several tables. */
+.segmented {
+  display: inline-flex;
+  gap: 3px;
+  padding: 4px;
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid var(--border);
+  border-radius: 13px;
+}
+.segmented button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: transparent;
+  border: 0;
+  border-radius: 10px;
+  padding: 7px 13px;
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 500;
+  transition: color 0.2s, background 0.2s;
+}
+.segmented button:hover { color: var(--text); }
+.segmented button.on {
+  color: var(--text);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.13), rgba(255, 255, 255, 0.05));
+  box-shadow: var(--shadow-sm), inset 0 1px 0 rgba(255, 255, 255, 0.14);
+}
+.segmented .seg-sub { font-family: var(--mono); font-size: 11px; color: var(--faint); }
+.segmented button.on .seg-sub { color: var(--accent); }
 
 .live {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   font-size: 12px;
+  font-weight: 500;
+  color: var(--muted);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 5px 12px 5px 10px;
+}
+.live .dot {
+  position: relative;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--win);
+}
+/* The halo is the connection: it pulses while the socket is open and vanishes when it is not. */
+.live .dot::after {
+  content: "";
+  position: absolute;
+  inset: -4px;
+  border-radius: 50%;
+  border: 1px solid var(--win);
+  animation: ping 1.8s ease-out infinite;
+}
+.live .dot.off { background: var(--faint); }
+.live .dot.off::after { display: none; }
+
+@keyframes ping {
+  0% { opacity: 0.7; transform: scale(0.6); }
+  100% { opacity: 0; transform: scale(1.5); }
+}
+
+/* ---------------------------------------------------------------- playing cards */
+
+.cards { display: inline-flex; gap: 4px; }
+.cards.tight { gap: 2px; }
+
+.pc {
+  --w: 46px;
+  --r: 7px;
+  position: relative;
+  display: inline-grid;
+  width: var(--w);
+  height: calc(var(--w) * 1.42);
+  border-radius: var(--r);
+  background: linear-gradient(170deg, #fff 0%, #eef1f6 62%, #dfe4ec 100%);
+  color: #14161c;
+  box-shadow:
+    0 1px 1px rgb(0 0 0 / 0.5),
+    0 6px 14px -6px rgb(0 0 0 / 0.85),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.9);
+  overflow: hidden;
+  user-select: none;
+  backface-visibility: hidden;
+}
+.pc.red { color: #d92b3f; }
+.pc-rank {
+  position: absolute;
+  top: calc(var(--w) * 0.06);
+  left: calc(var(--w) * 0.11);
+  font-family: var(--sans);
+  font-weight: 750;
+  font-size: calc(var(--w) * 0.42);
+  line-height: 1;
+  letter-spacing: -0.06em;
+}
+.pc-suit {
+  position: absolute;
+  right: calc(var(--w) * 0.09);
+  bottom: calc(var(--w) * 0.05);
+  font-size: calc(var(--w) * 0.5);
+  line-height: 1;
+  opacity: 0.95;
+}
+/* A hint of the corner index at the opposite corner, as on a real card. */
+.pc-mini {
+  position: absolute;
+  top: calc(var(--w) * 0.44);
+  left: calc(var(--w) * 0.13);
+  font-size: calc(var(--w) * 0.28);
+  line-height: 1;
+  opacity: 0.75;
+}
+/* Gloss: a fixed highlight so a row of cards catches the room light the same way. */
+.pc::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(112deg, rgba(255, 255, 255, 0.9) 0%, rgba(255, 255, 255, 0) 42%);
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+.pc.back {
+  background:
+    repeating-linear-gradient(45deg, rgba(255, 255, 255, 0.05) 0 3px, transparent 3px 6px),
+    linear-gradient(150deg, #2b3346, #171c28 55%, #0e121b);
+  box-shadow:
+    0 1px 1px rgb(0 0 0 / 0.5),
+    0 6px 14px -6px rgb(0 0 0 / 0.85),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.12);
+}
+/* The monogram on the back of the deck. */
+.pc.back::after {
+  content: "";
+  position: absolute;
+  inset: calc(var(--w) * 0.14);
+  border-radius: calc(var(--r) * 0.6);
+  border: 1px solid rgba(247, 185, 85, 0.28);
+  background: radial-gradient(circle at 50% 50%, rgba(247, 185, 85, 0.16), transparent 65%);
+}
+.pc.back::before { opacity: 0.18; }
+
+.pc.xs { --w: 22px; --r: 4px; }
+.pc.sm { --w: 30px; --r: 5px; }
+.pc.lg { --w: 60px; --r: 9px; }
+
+/* Dealt: the card arrives edge-on and rolls flat, one after another. */
+.pc.dealt {
+  animation: card-in 0.5s var(--ease-out) both;
+  animation-delay: calc(var(--i, 0) * 80ms);
+}
+@keyframes card-in {
+  0% { opacity: 0; transform: translate3d(0, -26px, 0) rotateY(88deg) scale(0.9); }
+  60% { opacity: 1; }
+  100% { opacity: 1; transform: none; }
+}
+/* The specular sweep that follows a card landing. Sold entirely by the timing. */
+.pc.dealt::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(100deg, transparent 35%, rgba(255, 255, 255, 0.85) 50%, transparent 65%);
+  transform: translateX(-120%);
+  animation: card-shine 0.7s ease-out both;
+  animation-delay: calc(var(--i, 0) * 80ms + 260ms);
+}
+.pc.back.dealt::after { animation: none; }
+@keyframes card-shine {
+  to { transform: translateX(120%); }
+}
+
+/* ---------------------------------------------------------------- chips */
+
+.chip-stack { position: relative; display: inline-block; }
+.chip-disc {
+  position: absolute;
+  left: 0;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background:
+    repeating-conic-gradient(from 0deg, var(--chip-edge) 0deg 22deg, var(--chip) 22deg 45deg);
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.7), inset 0 0 0 1px rgba(0, 0, 0, 0.35);
+  animation: chip-drop 0.32s var(--ease-spring) both;
+  animation-delay: calc(var(--i, 0) * 45ms);
+}
+.chip-disc::after {
+  content: "";
+  position: absolute;
+  inset: 4px;
+  border-radius: 50%;
+  background: var(--chip);
+  box-shadow: inset 0 1px 1px rgba(255, 255, 255, 0.45), inset 0 -1px 1px rgba(0, 0, 0, 0.3);
+}
+@keyframes chip-drop {
+  0% { opacity: 0; transform: translateY(-10px) scale(0.8); }
+  100% { opacity: 1; transform: none; }
+}
+
+/* ---------------------------------------------------------------- the table */
+
+/* The pods ring the felt exactly, not the padded box around it: the padding exists only so
+   that a seat hanging half off the rail has somewhere to hang. Both use the same two
+   variables so the ring can never drift from the cloth it is supposed to sit on. */
+.table-stage {
+  --pad-y: 42px;
+  --pad-x: 90px;
+  position: relative;
+  margin: 6px 0 22px;
+  padding: var(--pad-y) var(--pad-x);
+}
+.pods-grid {
+  position: absolute;
+  inset: var(--pad-y) var(--pad-x);
+  pointer-events: none;
+}
+.pods-grid .pod { pointer-events: auto; }
+
+.felt {
+  position: relative;
+  /* Chips that travel — a bet swept into the pot, a pot paid out to a seat — measure their
+     journey in `cqw`/`cqh`, which is this box. See `seatOffset`. */
+  container-type: size;
+  aspect-ratio: 16 / 8.4;
+  border-radius: 999px;
+  background:
+    radial-gradient(ellipse 62% 78% at 50% 40%, color-mix(in srgb, var(--felt) 88%, #1d8a5b), transparent 72%),
+    radial-gradient(ellipse at 50% 50%, var(--felt) 0%, #0c4a31 58%, var(--felt-deep) 100%);
+  box-shadow:
+    /* rail */
+    0 0 0 9px #171a21,
+    0 0 0 10px rgba(255, 255, 255, 0.06),
+    0 0 0 13px #0d0f14,
+    /* the table sitting in a dark room */
+    0 40px 90px -30px rgb(0 0 0 / 0.95),
+    inset 0 0 90px rgba(0, 0, 0, 0.55),
+    inset 0 2px 0 rgba(255, 255, 255, 0.07);
+  display: grid;
+  place-items: center;
+  isolation: isolate;
+}
+/* Felt weave. Two crossed micro-gradients read as cloth at any zoom. */
+.felt::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  opacity: 0.35;
+  background-image:
+    repeating-linear-gradient(45deg, rgba(0, 0, 0, 0.08) 0 1px, transparent 1px 3px),
+    repeating-linear-gradient(-45deg, rgba(255, 255, 255, 0.03) 0 1px, transparent 1px 3px);
+  pointer-events: none;
+}
+/* The betting line, the way a real table has one. */
+.felt::after {
+  content: "";
+  position: absolute;
+  inset: 13% 9%;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  pointer-events: none;
+}
+
+.felt-mark {
+  position: absolute;
+  top: 21%;
+  left: 50%;
+  translate: -50% 0;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.42em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.13);
+  text-shadow: 0 1px 0 rgba(0, 0, 0, 0.4);
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+.table-center {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding-top: 8px;
+}
+
+.pot {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 6px 16px 6px 10px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.42);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08), 0 6px 18px -8px rgb(0 0 0 / 0.9);
+  backdrop-filter: blur(4px);
+  transition: transform 0.35s var(--ease-spring);
+}
+.pot.bumped { transform: scale(1.07); }
+.pot-label { font-size: 9.5px; letter-spacing: 0.18em; text-transform: uppercase; color: rgba(255, 255, 255, 0.45); font-weight: 700; }
+.pot-value {
+  font-family: var(--mono);
+  font-size: 19px;
+  font-weight: 600;
+  letter-spacing: -0.04em;
+  line-height: 1.15;
+  font-variant-numeric: tabular-nums;
+  color: #fff;
+}
+.pot-value small { font-size: 10px; opacity: 0.5; margin-left: 4px; letter-spacing: 0; }
+
+.board {
+  display: flex;
+  justify-content: center;
+  gap: 7px;
+  min-height: 66px;
+  align-items: center;
+  perspective: 900px;
+}
+.board-placeholder {
+  display: flex;
+  gap: 7px;
+}
+.board-slot {
+  width: 46px;
+  height: 65px;
+  border-radius: 7px;
+  border: 1px dashed rgba(255, 255, 255, 0.11);
+  background: rgba(0, 0, 0, 0.14);
+}
+
+.street-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.5);
+}
+.street-tag b { color: var(--accent); font-weight: 600; }
+/* An id is a literal. Small-caps it and a reader has to translate it back before pasting. */
+.street-tag .raw { text-transform: none; letter-spacing: 0.02em; opacity: 0.75; }
+
+/* The commitment flash. Shown for a beat at the start of every hand, because "the shuffle
+   was sealed before anyone spoke" is the single most important claim this room makes. */
+.commit-flash {
+  position: absolute;
+  bottom: 15%;
+  left: 50%;
+  translate: -50% 0;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 12px;
+  border-radius: 999px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: rgba(255, 255, 255, 0.72);
+  background: rgba(0, 0, 0, 0.5);
+  border: 1px solid rgba(247, 185, 85, 0.3);
+  white-space: nowrap;
+  animation: flash-in 3.4s var(--ease-out) both;
+  z-index: 3;
+}
+.commit-flash svg { width: 11px; height: 11px; color: var(--accent); }
+@keyframes flash-in {
+  0% { opacity: 0; transform: translateY(6px) scale(0.94); }
+  9%, 78% { opacity: 1; transform: none; }
+  100% { opacity: 0; transform: translateY(-4px); }
+}
+
+/* ---- seats around the rim ---- */
+
+.pod {
+  position: absolute;
+  left: var(--x);
+  top: var(--y);
+  translate: -50% -50%;
+  width: 172px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  z-index: 5;
+  animation: pod-in 0.5s var(--ease-out) both;
+  animation-delay: calc(var(--i, 0) * 55ms);
+}
+@keyframes pod-in {
+  from { opacity: 0; transform: scale(0.9); }
+  to { opacity: 1; transform: none; }
+}
+
+.pod-card {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 8px 11px 8px 8px;
+  border-radius: 13px;
+  background: linear-gradient(165deg, rgba(28, 33, 43, 0.96), rgba(14, 17, 23, 0.96));
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-md), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  backdrop-filter: blur(8px);
+  transition: border-color 0.3s, box-shadow 0.4s, opacity 0.4s, filter 0.4s;
+}
+.pod-name { font-size: 12.5px; font-weight: 600; letter-spacing: -0.01em; }
+.pod-stack {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  transition: color 0.3s;
+}
+.pod-stack b { color: var(--text); font-weight: 500; }
+
+.pod.folded .pod-card { opacity: 0.34; filter: grayscale(0.7); }
+.pod.folded .pod-hole { opacity: 0.25; }
+
+/* Whoever is thinking gets the only warm border on the table. */
+.pod.acting .pod-card {
+  border-color: color-mix(in srgb, var(--accent) 62%, transparent);
+  box-shadow: var(--shadow-md), 0 0 24px -6px rgba(247, 185, 85, 0.55), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+.pod.winner .pod-card {
+  border-color: color-mix(in srgb, var(--win) 58%, transparent);
+  box-shadow: var(--shadow-md), 0 0 30px -4px rgba(61, 220, 151, 0.5);
+  animation: winner-pulse 1.1s ease-in-out 2;
+}
+@keyframes winner-pulse {
+  50% { box-shadow: var(--shadow-md), 0 0 44px 0 rgba(61, 220, 151, 0.6); }
+}
+.pod.allin .pod-card { border-color: color-mix(in srgb, var(--lose) 45%, transparent); }
+
+/* A chair nobody is in. Quiet enough to read as absence rather than as a player. */
+.pod.empty-seat { z-index: 3; animation: none; }
+.pod.empty-seat .pod-card {
+  background: rgba(255, 255, 255, 0.02);
+  border-style: dashed;
+  box-shadow: none;
+  justify-content: center;
+  padding: 10px;
+}
+.empty-chair {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 1.5px dashed var(--border-strong);
+}
+
+.avatar {
+  position: relative;
+  flex: none;
+  width: 34px;
+  height: 34px;
+  border-radius: 11px;
+  display: grid;
+  place-items: center;
+  font-size: 12px;
+  font-weight: 700;
+  color: rgba(255, 255, 255, 0.92);
+  letter-spacing: -0.02em;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+  background: linear-gradient(150deg, hsl(var(--h1) 62% 46%), hsl(var(--h2) 58% 30%));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.3), 0 2px 8px -2px rgba(0, 0, 0, 0.7);
+}
+.avatar.lg { width: 62px; height: 62px; border-radius: 19px; font-size: 21px; }
+.avatar.sm { width: 26px; height: 26px; border-radius: 8px; font-size: 10px; }
+
+/* The thinking ring. Deliberately indeterminate — the spectator feed does not carry the
+   acting seat's deadline, so a countdown here would be a number we invented. */
+.pod.acting .avatar::after {
+  content: "";
+  position: absolute;
+  inset: -4px;
+  border-radius: 14px;
+  border: 1.5px solid transparent;
+  border-top-color: var(--accent);
+  border-right-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  animation: think 0.9s linear infinite;
+}
+@keyframes think { to { transform: rotate(360deg); } }
+
+.pod-hole {
+  position: absolute;
+  right: 8px;
+  top: -20px;
+  display: flex;
+  gap: 3px;
+  transition: opacity 0.4s;
+  z-index: -1;
+}
+.pod-hole .pc:first-child { transform: rotate(-7deg); }
+.pod-hole .pc:last-child { transform: rotate(6deg) translateX(-4px); }
+
+.pod-badges { position: absolute; left: -7px; top: -8px; display: flex; gap: 4px; }
+.badge-dealer {
+  display: grid;
+  place-items: center;
+  width: 19px;
+  height: 19px;
+  border-radius: 50%;
+  background: linear-gradient(160deg, #fff, #c9cfda);
+  color: #14161c;
+  font-size: 9.5px;
+  font-weight: 800;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.6);
+}
+.badge-tiny {
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
   color: var(--muted);
 }
-.live .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--win); }
-.live .dot.off { background: var(--muted); }
+.badge-tiny.allin { background: rgba(255, 107, 129, 0.16); border-color: rgba(255, 107, 129, 0.4); color: var(--lose); }
+
+/* What a seat just did, floating over it and fading out. */
+.pod-say {
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 6px);
+  translate: -50% 0;
+  padding: 4px 11px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  background: rgba(12, 15, 20, 0.95);
+  border: 1px solid var(--border-strong);
+  box-shadow: var(--shadow-md);
+  animation: say 2.4s var(--ease-out) both;
+  z-index: 8;
+}
+.pod-say.fold { color: var(--muted); }
+.pod-say.check { color: #9fd0ff; }
+.pod-say.call { color: #9fd0ff; border-color: rgba(159, 208, 255, 0.35); }
+.pod-say.bet, .pod-say.raise { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
+.pod-say.allin { color: var(--lose); border-color: rgba(255, 107, 129, 0.5); animation: say 2.4s var(--ease-out) both, allin-throb 0.6s ease-in-out 2; }
+/* `scale` is its own property, so it composes with what `say` is doing to `transform`. */
+@keyframes allin-throb { 50% { scale: 1.12; } }
+/*
+ * No `-50%` in here, on purpose.
+ *
+ * The element is already centred by the `translate` property in its own rule. `translate`,
+ * `rotate`, `scale` and `transform` are four separate properties that compose in that order —
+ * so repeating the centring inside a `transform` keyframe applies it twice and shifts the
+ * bubble half its own width to the left. Keyframes move things; the rule places them.
+ */
+@keyframes say {
+  0% { opacity: 0; transform: translateY(8px) scale(0.9); }
+  10%, 72% { opacity: 1; transform: none; }
+  100% { opacity: 0; transform: translateY(-6px) scale(0.96); }
+}
+
+/* Money won, rising off the seat. */
+.pod-won {
+  position: absolute;
+  left: 50%;
+  top: -34px;
+  translate: -50% 0;
+  font-family: var(--mono);
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--win);
+  text-shadow: 0 0 16px rgba(61, 220, 151, 0.7);
+  white-space: nowrap;
+  animation: won-rise 2.6s var(--ease-out) both;
+  z-index: 9;
+}
+@keyframes won-rise {
+  0% { opacity: 0; transform: translateY(14px) scale(0.8); }
+  16% { opacity: 1; transform: scale(1.1); }
+  26% { transform: none; }
+  76% { opacity: 1; }
+  100% { opacity: 0; transform: translateY(-22px); }
+}
+/* Same arrival, but it stays. A replay has no next hand to make room for. */
+.pod-won.hold { animation: won-land 0.6s var(--ease-out) both; }
+@keyframes won-land {
+  0% { opacity: 0; transform: translateY(14px) scale(0.8); }
+  60% { opacity: 1; transform: scale(1.12); }
+  100% { opacity: 1; transform: none; }
+}
+
+.pod-showdown {
+  position: absolute;
+  left: 50%;
+  bottom: -19px;
+  translate: -50% 0;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  color: var(--win);
+  white-space: nowrap;
+  background: rgba(6, 20, 15, 0.9);
+  border: 1px solid rgba(61, 220, 151, 0.3);
+  border-radius: 999px;
+  padding: 2px 9px;
+  animation: pod-in 0.4s var(--ease-out) both;
+}
+
+/* ---- chips out in front of a seat ---- */
+
+/*
+ * `.bet-stack`, not `.bet`.
+ *
+ * The action a seat took is rendered as a class too — `fold`, `call`, `bet` — on the bubble
+ * over its head and on the row in a replay's action log. A bare `.bet` here collided with
+ * those: this absolutely-positioned rule escaped onto the word "bet" in the log and threw it
+ * halfway down the page, on top of the next heading.
+ */
+.bet-stack {
+  position: absolute;
+  left: var(--x);
+  top: var(--y);
+  translate: -50% -50%;
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px 3px 4px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.5);
+  border: 1px solid rgba(255, 255, 255, 0.11);
+  font-family: var(--mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: rgba(255, 255, 255, 0.9);
+  box-shadow: 0 4px 12px -6px rgb(0 0 0 / 0.9);
+  animation: bet-in 0.3s var(--ease-spring) both;
+}
+@keyframes bet-in {
+  from { opacity: 0; transform: scale(0.6); }
+  to { opacity: 1; transform: none; }
+}
+/* Street over: everything on the cloth slides into the middle. */
+.bet-stack.sweeping {
+  animation: bet-sweep 0.55s var(--ease-out) both;
+}
+@keyframes bet-sweep {
+  0% { opacity: 1; transform: none; }
+  70% { opacity: 1; }
+  100% { opacity: 0; transform: translate(var(--dx), var(--dy)) scale(0.55); }
+}
+
+/* Pot going the other way, to whoever won it. */
+.award-fly {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  z-index: 6;
+  animation: award-fly 0.85s var(--ease-out) both;
+  animation-delay: 0.15s;
+}
+@keyframes award-fly {
+  0% { opacity: 0; transform: translate(-50%, -50%) scale(0.7); }
+  18% { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+  100% {
+    opacity: 0;
+    transform: translate(calc(-50% + var(--dx)), calc(-50% + var(--dy))) scale(0.85);
+  }
+}
+
+/* ---------------------------------------------------------------- hand rows */
+
+/*
+ * One row per finished hand: when, what the board was, who took it, and for how much.
+ *
+ * The columns are fixed so a list of them scans as a table rather than as ten differently
+ * shaped rows — and narrow enough that the phone rules below can drop the two least useful
+ * ones (the time and the winner's id) instead of crushing everything into nothing.
+ */
+.hand-row .when { width: 66px; flex: none; }
+.hand-row .board-cell { width: 172px; flex: none; display: flex; }
+.hand-row .who { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.hand-row .who .name { font-size: 13px; }
+.hand-row .pot-cell { font-size: 13px; flex: none; }
+.hand-row .chev { transition: transform 0.2s var(--ease-out); }
+.hand-row:hover .chev { transform: translateX(3px); color: var(--accent); }
+
+@media (max-width: 620px) {
+  .hand-row .when, .hand-row .who .name, .hand-row .id-cell { display: none; }
+  .hand-row .board-cell { width: auto; flex: 1; }
+  .hand-row .who { flex: none; }
+}
+
+/* ---------------------------------------------------------------- table strip */
+
+.table-strip {
+  display: flex;
+  align-items: center;
+  gap: 22px;
+  flex-wrap: wrap;
+  padding: 12px 18px;
+  border-radius: var(--radius);
+  background: var(--surface);
+  border: 1px solid var(--border);
+}
+.strip-item { display: flex; flex-direction: column; gap: 2px; }
+.strip-item .k { font-size: 10px; text-transform: uppercase; letter-spacing: 0.12em; color: var(--faint); font-weight: 600; }
+.strip-item .v { font-family: var(--mono); font-size: 13px; font-variant-numeric: tabular-nums; }
+
+/* ---------------------------------------------------------------- replay */
+
+.replay-bar {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 16px;
+  border-radius: var(--radius);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+.scrub { flex: 1; min-width: 220px; display: flex; align-items: center; gap: 12px; }
+.scrub input[type="range"] {
+  flex: 1;
+  -webkit-appearance: none;
+  appearance: none;
+  height: 5px;
+  border-radius: 99px;
+  background: linear-gradient(90deg, var(--accent) var(--pct, 0%), rgba(255, 255, 255, 0.11) var(--pct, 0%));
+  outline: none;
+  cursor: pointer;
+}
+.scrub input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  background: #fff;
+  border: 3px solid var(--accent);
+  box-shadow: 0 2px 8px rgb(0 0 0 / 0.7);
+  cursor: grab;
+  transition: transform 0.15s;
+}
+.scrub input[type="range"]::-webkit-slider-thumb:hover { transform: scale(1.2); }
+.scrub input[type="range"]::-moz-range-thumb {
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background: #fff;
+  border: 3px solid var(--accent);
+}
+.scrub-count { font-family: var(--mono); font-size: 12px; color: var(--muted); white-space: nowrap; }
+
+.keys { color: var(--faint); font-size: 11.5px; margin: 10px 2px 0; }
+.keys kbd {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 5px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-bottom-width: 2px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--muted);
+}
+
+.log-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 14px;
+  border-radius: var(--radius-sm);
+  border: 1px solid transparent;
+  cursor: pointer;
+  opacity: 0.4;
+  transition: opacity 0.25s, background 0.25s, border-color 0.25s, transform 0.25s;
+}
+.log-row:hover { background: var(--surface); opacity: 0.8; }
+.log-row.past { opacity: 0.72; }
+.log-row.now {
+  opacity: 1;
+  background: var(--accent-soft);
+  border-color: color-mix(in srgb, var(--accent) 30%, transparent);
+  transform: translateX(4px);
+}
+.log-street {
+  width: 62px;
+  flex: none;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+  color: var(--faint);
+}
+.log-verb { font-weight: 600; }
+.log-verb.fold { color: var(--muted); }
+.log-verb.raise, .log-verb.bet { color: var(--accent); }
+.log-verb.call, .log-verb.check { color: #9fd0ff; }
+.log-verb.allin { color: var(--lose); }
+
+/* ---------------------------------------------------------------- leaderboard */
+
+.podium {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+  align-items: end;
+  margin-bottom: 26px;
+}
+.podium-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 20px 14px 16px;
+  border-radius: var(--radius);
+  background: linear-gradient(180deg, var(--surface-2), rgba(255, 255, 255, 0.015));
+  border: 1px solid var(--border);
+  text-align: center;
+  overflow: hidden;
+  animation: rise 0.55s var(--ease-out) both;
+  animation-delay: calc(var(--i, 0) * 90ms);
+  transition: transform 0.3s var(--ease-out), border-color 0.3s;
+}
+.podium-card:hover { transform: translateY(-4px); border-color: var(--border-strong); }
+.podium-card.gold { border-color: rgba(247, 185, 85, 0.42); padding-top: 30px; }
+.podium-card.gold::before {
+  content: "";
+  position: absolute;
+  inset: -60% 20% auto;
+  height: 120%;
+  background: radial-gradient(ellipse at 50% 0%, rgba(247, 185, 85, 0.22), transparent 62%);
+  pointer-events: none;
+}
+.podium-rank {
+  position: absolute;
+  top: 10px;
+  left: 12px;
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--faint);
+}
+.podium-card.gold .podium-rank { color: var(--accent); }
+.podium-name { font-size: 13.5px; font-weight: 600; max-width: 100%; }
+.podium-net { font-family: var(--mono); font-size: 18px; letter-spacing: -0.03em; }
+.podium-sub { font-size: 11px; color: var(--faint); }
+@keyframes rise {
+  from { opacity: 0; transform: translateY(14px); }
+  to { opacity: 1; transform: none; }
+}
+
+table.data { width: 100%; border-collapse: collapse; }
+table.data th {
+  text-align: left;
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--faint);
+  padding: 0 14px 12px;
+  font-weight: 600;
+}
+table.data td { padding: 11px 14px; border-top: 1px solid var(--border); }
+table.data tbody tr { transition: background 0.2s; }
+table.data tbody tr:hover { background: var(--surface); }
+table.data td.n { text-align: right; font-family: var(--mono); font-size: 13px; font-variant-numeric: tabular-nums; }
+.rank-chip {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 8px;
+  background: var(--surface-2);
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--muted);
+}
+.rank-chip.top { background: linear-gradient(150deg, var(--accent), var(--accent-deep)); color: #241505; font-weight: 700; }
+
+/* How much of the field one agent's swing is, drawn under the row. */
+.net-bar {
+  height: 3px;
+  border-radius: 99px;
+  background: currentColor;
+  opacity: 0.55;
+  margin-top: 5px;
+  width: 0;
+  animation: bar-grow 0.8s var(--ease-out) forwards;
+  animation-delay: calc(var(--i, 0) * 45ms);
+}
+@keyframes bar-grow { to { width: var(--w, 0%); } }
+
+/* ---------------------------------------------------------------- agent page */
+
+.agent-hero {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  padding: 22px;
+  border-radius: var(--radius-lg);
+  background: linear-gradient(140deg, var(--surface-2), rgba(255, 255, 255, 0.01));
+  border: 1px solid var(--border);
+  margin: 30px 0 20px;
+  position: relative;
+  overflow: hidden;
+}
+.agent-hero::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(600px 200px at 0% 0%, rgba(247, 185, 85, 0.09), transparent 70%);
+  pointer-events: none;
+}
+.agent-hero h1 { margin: 0; font-size: clamp(21px, 3vw, 28px); }
+.id-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 7px;
+  padding: 4px 10px;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.32);
+  border: 1px solid var(--border);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--muted);
+  cursor: pointer;
+  transition: border-color 0.2s, color 0.2s;
+  max-width: 100%;
+}
+.id-chip:hover { border-color: var(--border-strong); color: var(--text); }
+
+/* ---------------------------------------------------------------- verify */
+
+pre.proof {
+  background: linear-gradient(180deg, #0a0d13, #070910);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px 18px;
+  overflow-x: auto;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.65;
+  margin: 0;
+  color: #c9d3e4;
+  max-height: 460px;
+}
+.proof .k { color: #7fb3ff; }
+.proof .s { color: var(--win); }
+.proof .n { color: var(--accent); }
+
+code.cmd {
+  display: block;
+  position: relative;
+  background: linear-gradient(180deg, #0a0d13, #070910);
+  border: 1px solid var(--border);
+  border-left: 2px solid var(--accent);
+  border-radius: var(--radius-sm);
+  padding: 14px 16px;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  line-height: 1.7;
+  overflow-x: auto;
+  white-space: pre;
+  color: #d6deec;
+}
+
+.check-list { display: grid; gap: 9px; }
+.check-item {
+  display: flex;
+  gap: 13px;
+  padding: 14px 16px;
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  animation: rise 0.5s var(--ease-out) both;
+  animation-delay: calc(var(--i, 0) * 70ms);
+}
+.check-num {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 7px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+/* ---------------------------------------------------------------- skeletons */
+
+.skeleton {
+  border-radius: var(--radius-sm);
+  background: linear-gradient(90deg, rgba(255, 255, 255, 0.04) 25%, rgba(255, 255, 255, 0.09) 37%, rgba(255, 255, 255, 0.04) 63%);
+  background-size: 400% 100%;
+  animation: shimmer 1.4s ease-in-out infinite;
+}
+@keyframes shimmer {
+  0% { background-position: 100% 50%; }
+  100% { background-position: 0 50%; }
+}
+
+/* ---------------------------------------------------------------- routing */
+
+/* Pages arrive rather than appear. `key` on the route makes this replay per navigation. */
+.page { animation: page-in 0.42s var(--ease-out) both; }
+@keyframes page-in {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: none; }
+}
+
+footer.site {
+  border-top: 1px solid var(--border);
+  margin-top: 60px;
+  padding: 22px 0 40px;
+  color: var(--faint);
+  font-size: 12.5px;
+  display: flex;
+  gap: 18px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+footer.site a:hover { color: var(--text); }
+
+/* ---------------------------------------------------------------- narrow */
+
+/* Under 900px the oval stops being readable — six pods around an ellipse need width more
+   than anything else. The felt shrinks to a banner and the seats become a plain grid, which
+   is the same information without the geometry. */
+@media (max-width: 900px) {
+  .table-stage { padding: 0; }
+  .pods-grid { position: static; inset: auto; }
+  .felt { aspect-ratio: 16 / 9.5; border-radius: 26px; }
+  .felt::after { inset: 10% 6%; border-radius: 20px; }
+  .felt-mark { display: none; }
+  .pod, .bet-stack {
+    position: static;
+    translate: none;
+    width: auto;
+  }
+  .bet-stack { display: none; }
+  /* 150px, not 168: two seats have to fit side by side on a 375px phone, and 168 misses it
+     by two pixels — which collapses the whole table into one column per seat. */
+  .pods-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    gap: 28px 9px;
+    margin-top: 34px;
+  }
+  .pod-hole { top: -22px; right: 6px; }
+  .award-fly { display: none; }
+}
+
+@media (max-width: 620px) {
+  .shell { padding: 0 15px 70px; }
+  .top-inner { padding: 11px 15px; gap: 10px; }
+  .pill-devnet { display: none; }
+  nav.main a { padding: 6px 10px; font-size: 13px; }
+  .podium { grid-template-columns: 1fr; }
+  .pot-value { font-size: 16px; }
+  .board { min-height: 52px; }
+  .pc { --w: 36px; }
+  .board-slot { width: 36px; height: 51px; }
+}
+
+/* ---------------------------------------------------------------- reduced motion */
+
+/*
+ * Everything above is decoration on top of a layout that already works. This turns all of it
+ * off in one place — no motion, no shimmer, no pulsing — while leaving position, colour and
+ * spacing exactly as they were.
+ */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+  .pod-say, .pod-won, .commit-flash { animation: none !important; opacity: 1 !important; transform: none !important; }
+  .award-fly, .bet-stack.sweeping { display: none !important; }
+}

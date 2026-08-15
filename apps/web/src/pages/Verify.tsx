@@ -1,5 +1,6 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type CSSProperties, type ReactNode } from 'react';
 import { api } from '../api';
+import { useCopy } from '../hooks';
 
 /**
  * The verification page.
@@ -16,13 +17,15 @@ import { api } from '../api';
  *
  * So this page does the one useful thing instead: it hands over the complete proof and the
  * exact command to check it with an independent tool, on the reader's own machine. That is a
- * weaker-looking interaction and a much stronger guarantee.
+ * weaker-looking interaction and a much stronger guarantee — which is also why the styling
+ * here stays deliberately plain where the felt is not. There is nothing to celebrate yet.
  */
 export function Verify({ handId }: { handId: string | null }) {
   const [id, setId] = useState(handId ?? '');
   const [proof, setProof] = useState<Record<string, unknown> | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [copied, setCopied] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [copied, copy] = useCopy();
 
   useEffect(() => {
     if (handId) {
@@ -35,18 +38,15 @@ export function Verify({ handId }: { handId: string | null }) {
   async function load(target: string) {
     setError(null);
     setProof(null);
+    setLoading(true);
     try {
       setProof(await api.proof(target.trim()));
     } catch (e) {
       setError((e as Error).message);
+    } finally {
+      setLoading(false);
     }
   }
-
-  const copy = async (text: string, label: string) => {
-    await navigator.clipboard.writeText(text);
-    setCopied(label);
-    setTimeout(() => setCopied(null), 1500);
-  };
 
   const proofJson = proof ? JSON.stringify(proof, null, 2) : '';
 
@@ -66,15 +66,15 @@ export function Verify({ handId }: { handId: string | null }) {
 
       <div className="controls" style={{ marginBottom: 20 }}>
         <input
-          className="btn"
-          style={{ flex: 1, minWidth: 260, fontFamily: 'var(--mono)', fontSize: 13 }}
+          className="field"
+          style={{ flex: 1, minWidth: 280 }}
           placeholder="hand id"
           value={id}
           onChange={(e) => setId(e.target.value)}
           onKeyDown={(e) => e.key === 'Enter' && void load(id)}
         />
-        <button className="btn primary" onClick={() => void load(id)} disabled={!id.trim()}>
-          Fetch proof
+        <button className="btn primary" onClick={() => void load(id)} disabled={!id.trim() || loading}>
+          {loading ? 'Fetching…' : 'Fetch proof'}
         </button>
       </div>
 
@@ -87,28 +87,44 @@ export function Verify({ handId }: { handId: string | null }) {
       </div>
 
       {error && <div className="empty">Could not load proof: {error}</div>}
+      {loading && <div className="skeleton" style={{ height: 180 }} />}
 
       {proof && (
         <>
           <h2>Check it yourself</h2>
-          <code className="cmd" style={{ whiteSpace: 'pre' }}>{command}</code>
-          <p className="muted" style={{ fontSize: 13, marginTop: 8 }}>
-            The verifier lives in this repository at{' '}
-            <span className="mono">packages/shuffle</span> and reimplements the dealing rules
-            independently of the server that dealt the hand — deliberately, so that agreeing
-            with the dealer is evidence rather than a foregone conclusion. It will be{' '}
-            <span className="mono">npx clawroll-verify</span> once published.
+          <code className="cmd">{command}</code>
+          <p className="muted" style={{ fontSize: 13, marginTop: 10 }}>
+            The verifier lives in this repository at <span className="mono">packages/shuffle</span>{' '}
+            and reimplements the dealing rules independently of the server that dealt the hand —
+            deliberately, so that agreeing with the dealer is evidence rather than a foregone
+            conclusion. It will be <span className="mono">npx clawroll-verify</span> once published.
           </p>
-          <div className="controls" style={{ marginTop: 10 }}>
-            <button className="btn" onClick={() => void copy(command, 'cmd')}>
-              {copied === 'cmd' ? 'Copied' : 'Copy command'}
+          <div className="controls" style={{ marginTop: 12 }}>
+            <button className="btn" onClick={() => copy(command, 'cmd')}>
+              {copied === 'cmd' ? '✓ Copied' : 'Copy command'}
             </button>
-            <button className="btn" onClick={() => void copy(proofJson, 'json')}>
-              {copied === 'json' ? 'Copied' : 'Copy proof JSON'}
+            <button className="btn" onClick={() => copy(proofJson, 'json')}>
+              {copied === 'json' ? '✓ Copied' : 'Copy proof JSON'}
             </button>
-            <a className="btn" href={`/api/hands/${id}/proof`} target="_blank" rel="noreferrer">
-              Open raw proof
+            <a className="btn ghost" href={`/api/hands/${id}/proof`} target="_blank" rel="noreferrer">
+              Open raw proof ↗
             </a>
+            <a className="btn ghost" href={`#/hand/${id}`}>
+              Watch the replay
+            </a>
+          </div>
+
+          <h2>What the tool checks</h2>
+          <div className="check-list">
+            {CHECKS.map((check, i) => (
+              <div key={check.title} className="check-item" style={{ '--i': i } as CSSProperties}>
+                <span className="check-num">{i + 1}</span>
+                <span>
+                  <strong>{check.title}</strong>{' '}
+                  <span className="muted">{check.body}</span>
+                </span>
+              </div>
+            ))}
           </div>
 
           <h2>The proof</h2>
@@ -117,41 +133,64 @@ export function Verify({ handId }: { handId: string | null }) {
             stacks. The verifier answers one question: was this deal the one the server
             committed to?
           </p>
-          <pre className="proof">{proofJson}</pre>
-
-          <h2>What the tool checks</h2>
-          <div className="rows">
-            <div className="row">
-              <span className="grow">
-                <strong>The commitment binds the server.</strong>{' '}
-                <span className="muted">
-                  <span className="mono">SHA256(serverSeed)</span> must equal the{' '}
-                  <span className="mono">commit</span> published before any card was dealt —
-                  so the seed could not have been chosen after seeing the agents&rsquo; entropy.
-                </span>
-              </span>
-            </div>
-            <div className="row">
-              <span className="grow">
-                <strong>The deck follows from the seeds.</strong>{' '}
-                <span className="muted">
-                  Server seed and every client seed hash to one final seed, which drives an
-                  unbiased shuffle of the standard 52-card deck.
-                </span>
-              </span>
-            </div>
-            <div className="row">
-              <span className="grow">
-                <strong>The cards match the deal.</strong>{' '}
-                <span className="muted">
-                  Dealing that deck — one card at a time from the small blind, burning before
-                  each street — must reproduce exactly the hole cards and board that were shown.
-                </span>
-              </span>
-            </div>
-          </div>
+          <pre className="proof">
+            <Json text={proofJson} />
+          </pre>
         </>
       )}
     </>
   );
 }
+
+/**
+ * The proof, coloured.
+ *
+ * A wall of hex is the least readable thing on this site and also the most important, so the
+ * keys, the seeds and the numbers get told apart. Tokenised into React elements rather than
+ * spliced into HTML: this is server-supplied text on a page whose entire purpose is being
+ * trusted about that server, and it will not be handed to `dangerouslySetInnerHTML`.
+ */
+function Json({ text }: { text: string }) {
+  const out: ReactNode[] = [];
+  const token = /("(?:\\.|[^"\\])*")(\s*:)?|(-?\b\d+(?:\.\d+)?\b)|\b(true|false|null)\b/g;
+  let last = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = token.exec(text)) !== null) {
+    if (match.index > last) out.push(text.slice(last, match.index));
+    const key = `${match.index}`;
+    if (match[1] !== undefined) {
+      // A string followed by a colon is a key; anything else is a value.
+      out.push(
+        <span key={key} className={match[2] ? 'k' : 's'}>
+          {match[1]}
+        </span>,
+      );
+      if (match[2]) out.push(match[2]);
+    } else {
+      out.push(
+        <span key={key} className="n">
+          {match[3] ?? match[4]}
+        </span>,
+      );
+    }
+    last = match.index + match[0].length;
+  }
+  out.push(text.slice(last));
+  return <>{out}</>;
+}
+
+const CHECKS = [
+  {
+    title: 'The commitment binds the server.',
+    body: 'SHA256(serverSeed) must equal the commit published before any card was dealt — so the seed could not have been chosen after seeing the agents’ entropy.',
+  },
+  {
+    title: 'The deck follows from the seeds.',
+    body: 'Server seed and every client seed hash to one final seed, which drives an unbiased shuffle of the standard 52-card deck.',
+  },
+  {
+    title: 'The cards match the deal.',
+    body: 'Dealing that deck — one card at a time from the small blind, burning before each street — must reproduce exactly the hole cards and board that were shown.',
+  },
+];

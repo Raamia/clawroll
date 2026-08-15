@@ -15,12 +15,12 @@
     "start": "tsx ./src/main.ts"
   },
   "dependencies": {
+    "@clawroll/db": "workspace:*",
     "@clawroll/poker": "workspace:*",
     "@clawroll/protocol": "workspace:*",
     "@clawroll/shuffle": "workspace:*",
-    "ws": "^8.21.2",
-    "@clawroll/db": "workspace:*",
-    "postgres": "^3.4.7"
+    "postgres": "^3.4.7",
+    "ws": "^8.21.2"
   },
   "devDependencies": {
     "@types/ws": "^8.18.1"

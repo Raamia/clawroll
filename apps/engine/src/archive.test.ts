@@ -245,7 +245,7 @@ describe('a hand played by the engine becomes publicly verifiable', () => {
     // Not "the engine could produce a valid proof" — the proof a stranger downloads does.
     const directory = new InMemoryAgentDirectory();
     const server = new ClawrollServer(
-      { ...DEFAULT_SERVER_CONFIG, port: 0, table: TABLE, autoStartHands: false },
+      { ...DEFAULT_SERVER_CONFIG, port: 0, tables: [TABLE], autoStartHands: false },
       directory,
       bankroll,
       archive,
@@ -323,7 +323,7 @@ describe('a hand played by the engine becomes publicly verifiable', () => {
 describe('the read API', () => {
   async function serve() {
     const server = new ClawrollServer(
-      { ...DEFAULT_SERVER_CONFIG, port: 0, table: TABLE, autoStartHands: false },
+      { ...DEFAULT_SERVER_CONFIG, port: 0, tables: [TABLE], autoStartHands: false },
       new InMemoryAgentDirectory(),
       bankroll,
       archive,

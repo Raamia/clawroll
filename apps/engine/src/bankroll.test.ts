@@ -353,3 +353,118 @@ describe('a real hand settles through to Postgres', () => {
     expect(await ledger.findNegativeAgentAccounts()).toEqual([]);
   });
 });
+
+describe('startup reconciliation', () => {
+  it('releases chips seated at a table that still exists', async () => {
+    // The bug this covers cost real money on the deployed room. Seating lives in memory, so a
+    // restarted engine has nobody seated — but `table_seats` still says otherwise, and the old
+    // startup path exempted any table it was still serving. An agent seated at `main` when the
+    // engine restarted kept an in_play balance that no table held and it could never spend,
+    // and deploys restart the engine, so it happened every time and never corrected itself.
+    const agentId = await fundedAgent(10_000_000);
+    await bankroll.reserveBuyIn(agentId, 'main', 6_000_000);
+    await bankroll.trackSeat('main', agentId, 0, 6_000_000);
+
+    expect(await ledger.balanceOfAgent(agentId, 'in_play')).toBe(6_000_000);
+
+    const result = await bankroll.reconcileAtStartup();
+
+    expect(result.agentsRestored).toBeGreaterThan(0);
+    expect(await ledger.balanceOfAgent(agentId, 'in_play')).toBe(0);
+    expect(await ledger.balanceOfAgent(agentId, 'available')).toBe(10_000_000);
+  });
+
+  it('is safe to run when nothing is seated', async () => {
+    const result = await bankroll.reconcileAtStartup();
+    expect(result.microsRestored).toBeGreaterThanOrEqual(0);
+  });
+});
+
+describe('startup reconciliation finds chips with no seat record', () => {
+  it('releases an in_play balance whose seat row has vanished', async () => {
+    // The exact shape that lost money on the deployed room: 20 USDC in_play, `table_seats`
+    // empty. The seat records had been removed without the chips being returned, so every
+    // seat-driven reconciliation found nothing to do and the balance stayed unspendable
+    // through restart after restart.
+    const agentId = await fundedAgent(10_000_000);
+    await bankroll.reserveBuyIn(agentId, 'main', 7_000_000);
+    await bankroll.trackSeat('main', agentId, 0, 7_000_000);
+
+    // Drop the seat row but leave the chips committed — reproducing the broken state rather
+    // than assuming it cannot happen, since it demonstrably did.
+    await sql`DELETE FROM table_seats WHERE agent_id = ${agentId}`;
+    expect(await ledger.balanceOfAgent(agentId, 'in_play')).toBe(7_000_000);
+
+    const result = await bankroll.reconcileAtStartup();
+
+    expect(result.agentsRestored).toBeGreaterThan(0);
+    expect(await ledger.balanceOfAgent(agentId, 'in_play')).toBe(0);
+    expect(await ledger.balanceOfAgent(agentId, 'available')).toBe(10_000_000);
+  });
+
+  it('is idempotent across repeated startups', async () => {
+    // Engines restart often. A second pass must not credit the money twice.
+    const agentId = await fundedAgent(10_000_000);
+    await bankroll.reserveBuyIn(agentId, 'main', 4_000_000);
+    await sql`DELETE FROM table_seats WHERE agent_id = ${agentId}`;
+
+    await bankroll.reconcileAtStartup();
+    await bankroll.reconcileAtStartup();
+
+    expect(await ledger.balanceOfAgent(agentId, 'available')).toBe(10_000_000);
+    expect(await ledger.balanceOfAgent(agentId, 'in_play')).toBe(0);
+  });
+});
+
+describe('the outbox cannot be starved by a settlement that never applies', () => {
+  it('reaches a fresh settlement even behind a wall of failed ones', async () => {
+    // Strict oldest-first ordering plus a LIMIT is a head-of-line block waiting to happen.
+    // A settlement that can never apply sits at the front forever, and once enough of them
+    // accumulate to fill the limit, no new settlement is ever applied again — money stops
+    // moving and nothing errors, because every drain is busy "working" on doomed rows.
+    //
+    // Found for real: 134 wedged rows in a local database, and the drain reporting failures
+    // on the same hundred every pass.
+    const poison = [];
+    for (let i = 0; i < 5; i++) {
+      const handId = `hand_poison_${randomUUID()}`;
+      poison.push(handId);
+      // References an agent with no in_play balance, so it can never post.
+      const ghost = await fundedAgent(1_000_000);
+      await bankroll.recordSettlement({
+        handId,
+        tableId: TABLE_ID,
+        deltas: [
+          { agentId: ghost, amountMicros: -900_000 },
+          { agentId: ghost, amountMicros: 900_000 },
+        ],
+        rakeMicros: 0,
+      });
+    }
+    // Fail them once so they are marked, which is what pushes them behind fresh work.
+    await bankroll.applyPendingSettlements(5);
+
+    const alice = await fundedAgent(10_000_000);
+    const bob = await fundedAgent(10_000_000);
+    await bankroll.reserveBuyIn(alice, TABLE_ID, 5_000_000);
+    await bankroll.reserveBuyIn(bob, TABLE_ID, 5_000_000);
+    const fresh = `hand_${randomUUID()}`;
+    await bankroll.recordSettlement({
+      handId: fresh,
+      tableId: TABLE_ID,
+      deltas: [
+        { agentId: alice, amountMicros: 1_000_000 },
+        { agentId: bob, amountMicros: -1_000_000 },
+      ],
+      rakeMicros: 0,
+    });
+
+    // A limit smaller than the backlog. Under oldest-first this would only ever see poison.
+    await bankroll.applyPendingSettlements(3);
+
+    const row = await sql<{ applied_ledger_tx_id: string | null }[]>`
+      SELECT applied_ledger_tx_id FROM hand_settlements WHERE hand_id = ${fresh}`;
+    expect(row[0]?.applied_ledger_tx_id).toBeTruthy();
+    expect(await ledger.balanceOfAgent(alice, 'in_play')).toBe(6_000_000);
+  });
+});

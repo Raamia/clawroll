@@ -116,7 +116,17 @@ export class BankrollService {
     >`SELECT hand_id, deltas, rake_micros::text
       FROM hand_settlements
       WHERE applied_ledger_tx_id IS NULL
-      ORDER BY created_at ASC
+      -- Never-attempted rows first, then previously-failed ones oldest-first.
+      --
+      -- Strict created_at order plus a LIMIT is a head-of-line block waiting to happen: a
+      -- settlement that can never apply — an agent deleted, a balance already released —
+      -- sits at the front of the queue forever, and once enough of them accumulate to fill
+      -- the limit, no new settlement is ever applied again. Money silently stops moving and
+      -- nothing errors, because each drain is "working" on the same doomed rows.
+      --
+      -- Found with 134 of them wedged in a local database. A poison row still retries, it
+      -- just cannot starve the hands that came after it.
+      ORDER BY (last_error IS NOT NULL), created_at ASC
       LIMIT ${limit}`;
 
     let applied = 0;
@@ -169,6 +179,62 @@ export class BankrollService {
    * `liveTableIds` is what the process is actually about to serve, so anything else is by
    * definition abandoned.
    */
+  /**
+   * Release every seated chip, for a process that has just started.
+   *
+   * This is what startup actually needs, and passing the live table ids instead was a money
+   * bug. The runtime keeps seating **in memory**, so a freshly started engine has nobody
+   * seated anywhere — every row in `table_seats` is a leftover written by the process that
+   * came before it. Nothing ever reads those rows back to restore a seat; they exist only so
+   * chips can be found again after a crash.
+   *
+   * Exempting tables that still exist therefore protected nothing and stranded real money: an
+   * agent seated at `main` when the engine restarted kept an `in_play` balance that no table
+   * held and it could never spend. Deploys restart the engine, so this happened on every
+   * deploy, silently, and the balance stayed wrong forever.
+   *
+   * `reconcileOrphanedChips` keeps the live-table exemption because it is a sensible
+   * primitive for a caller that knows seating survived. No such caller exists today.
+   */
+  async reconcileAtStartup(): Promise<{ agentsRestored: number; microsRestored: number }> {
+    // Driven by the ledger, not by `table_seats`.
+    //
+    // Iterating seat rows was the original design and it cannot find the money in the case
+    // that actually happened: on the deployed room an agent ended up with 20 USDC `in_play`
+    // and **no seat row at all**. Four buy-ins, one cash-out, an empty `table_seats`. The seat
+    // records had been removed without the chips being returned, so every seat-driven
+    // reconciliation — including one that released every seat — found nothing to do and the
+    // balance stayed unspendable.
+    //
+    // `in_play` is the authoritative record of chips committed to a table. At startup no table
+    // holds any, because seating lives in memory and this process has just begun. So a
+    // non-zero `in_play` balance is by definition abandoned, whether or not a seat row
+    // survived to describe it. Asking the ledger directly covers both failures with one query.
+    const holders = await this.sql<{ agent_id: string; balance: string }[]>`
+      SELECT a.agent_id, sum(e.amount_micros)::text AS balance
+      FROM accounts a JOIN ledger_entries e ON e.account_id = a.id
+      WHERE a.type = 'in_play' AND a.agent_id IS NOT NULL
+      GROUP BY a.agent_id
+      HAVING sum(e.amount_micros) > 0`;
+
+    let agentsRestored = 0;
+    let microsRestored = 0;
+
+    for (const holder of holders) {
+      const inPlay = Number(holder.balance);
+      // The ref is unique per agent and amount so a repeated startup is a no-op rather than a
+      // double credit — `external_ref` is the ledger's idempotency key.
+      await this.ledger.cashOut(holder.agent_id, inPlay, `reconcile:startup:${holder.agent_id}:${inPlay}`);
+      microsRestored += inPlay;
+      agentsRestored++;
+    }
+
+    // Seat rows are stale regardless — nobody is seated in a process that has just started.
+    await this.sql`DELETE FROM table_seats`;
+
+    return { agentsRestored, microsRestored };
+  }
+
   async reconcileOrphanedChips(liveTableIds: readonly string[]): Promise<{
     agentsRestored: number;
     microsRestored: number;

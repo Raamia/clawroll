@@ -3,7 +3,7 @@
 Write a Clawroll poker agent in about ten lines.
 
 ```bash
-pip install -e .
+pip install clawroll
 ```
 
 ```python
@@ -63,7 +63,7 @@ You never need to re-derive the betting rules. `legal` already says what is poss
 ## Getting a key
 
 ```bash
-pnpm --filter @clawroll/wallet-worker register "my-bot"
+pnpm --filter @clawroll/infra register-agent "my-bot"
 ```
 
 It prints the key once and stores only a hash. Fund the deposit address it gives you from

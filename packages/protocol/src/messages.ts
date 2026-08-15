@@ -167,6 +167,8 @@ export const ActionRequestMessage = z.object({
 
 export const ActionTakenMessage = z.object({
   type: z.literal('action_taken'),
+  /** Which table this happened at. A spectator sees every table interleaved. */
+  tableId: z.string(),
   handId: z.string(),
   seat: Seat,
   action: ActionType,
@@ -179,6 +181,8 @@ export const ActionTakenMessage = z.object({
 
 export const StreetMessage = z.object({
   type: z.literal('street'),
+  /** Which table this happened at. A spectator sees every table interleaved. */
+  tableId: z.string(),
   handId: z.string(),
   street: Street,
   board: CardList,
@@ -187,6 +191,8 @@ export const StreetMessage = z.object({
 
 export const ShowdownMessage = z.object({
   type: z.literal('showdown'),
+  /** Which table this happened at. A spectator sees every table interleaved. */
+  tableId: z.string(),
   handId: z.string(),
   hands: z.array(z.object({ seat: Seat, cards: CardList, description: z.string() })),
   pots: z.array(PotView),
@@ -200,6 +206,8 @@ export const ShowdownMessage = z.object({
  */
 export const HandEndMessage = z.object({
   type: z.literal('hand_end'),
+  /** Which table this happened at. A spectator sees every table interleaved. */
+  tableId: z.string(),
   handId: z.string(),
   serverSeed: Hex64,
   clientSeeds: z.array(z.object({ seat: Seat, seed: Hex64 })),
@@ -216,6 +224,9 @@ export const ErrorMessage = z.object({
     'stale_request',
     'not_seated',
     'table_full',
+    /** Named a table this room does not serve. Distinct from `not_seated`: the table is
+     *  not merely unavailable, it does not exist here. */
+    'unknown_table',
     'insufficient_funds',
     'rate_limited',
     'internal',

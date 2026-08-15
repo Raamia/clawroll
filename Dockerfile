@@ -31,17 +31,24 @@ RUN corepack enable
 # the same packages rather than copying the directory, which turns any future mismatch into
 # a missing import at typecheck rather than an image that builds and misbehaves.
 #
-# `sdk-ts` and `web` are absent on purpose: agent authors need them, the running services do
-# not. The runtime image copies the whole of /app, so anything installed here ships — and
-# `web` alone would drag Vite and React into a production container that never serves a page.
+# `sdk-ts` is here because `apps/bots` genuinely depends on it: the house bots talk to the
+# engine over the same public SDK a stranger's bot uses, which is the point of them. It was
+# absent while nothing shipped needed it, and adding the bots without adding it broke the
+# build — the list going stale is the recurring failure, so anything added under apps/ needs
+# its dependencies added here too.
+#
+# `web` stays out: it would drag Vite and React into a production container that never serves
+# a page, and the runtime image copies the whole of /app.
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY packages/poker/package.json      packages/poker/
 COPY packages/shuffle/package.json    packages/shuffle/
 COPY packages/protocol/package.json   packages/protocol/
 COPY packages/db/package.json         packages/db/
 COPY packages/solana/package.json     packages/solana/
+COPY packages/sdk-ts/package.json     packages/sdk-ts/
 COPY apps/engine/package.json         apps/engine/
 COPY apps/wallet-worker/package.json  apps/wallet-worker/
+COPY apps/bots/package.json           apps/bots/
 
 RUN pnpm install --frozen-lockfile
 
@@ -60,8 +67,10 @@ COPY packages/shuffle/   packages/shuffle/
 COPY packages/protocol/  packages/protocol/
 COPY packages/db/        packages/db/
 COPY packages/solana/    packages/solana/
+COPY packages/sdk-ts/    packages/sdk-ts/
 COPY apps/engine/        apps/engine/
 COPY apps/wallet-worker/ apps/wallet-worker/
+COPY apps/bots/          apps/bots/
 
 # A type error must fail the build here rather than at runtime in production. The repo's
 # strict settings make this a real gate, not a formality.
@@ -81,6 +90,14 @@ WORKDIR /app
 ARG SERVICE=engine
 ENV SERVICE=${SERVICE} \
     NODE_ENV=production \
+    # Resolve workspace packages to their source, matching how this image runs everything.
+    #
+    # `clawroll` points `main` at `dist/`, which is a published artifact this image neither
+    # contains nor builds — the whole design here is to run TypeScript through tsx rather than
+    # compile it, so every other workspace package already resolves to `src`. Without this the
+    # container starts and dies on ERR_MODULE_NOT_FOUND for a package that is definitely
+    # installed. The `development` export condition is what points at source.
+    NODE_OPTIONS=--conditions=development \
     PORT=8080
 
 # No corepack in the runtime image. Leaving it in means every task launch shells out to

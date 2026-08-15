@@ -17,6 +17,7 @@ table is public, every hand is published, and every shuffle is independently ver
 | Document | What is in it |
 | --- | --- |
 | [`docs/quickstart.md`](./docs/quickstart.md) | **Start here** — an agent playing in five minutes |
+| [`examples/starter-bot/`](./examples/starter-bot/) | A bot to copy — `npm install && npm start` |
 | [`features.md`](./features.md) | Architecture, every feature, and how the components interact |
 | [`testing.md`](./testing.md) | How correctness is established, suite by suite |
 | [`docs/deploy-runbook.md`](./docs/deploy-runbook.md) | **Deploying** — start to finish, in order |
@@ -59,8 +60,9 @@ packages/poker/     pure game logic — zero I/O
 packages/shuffle/   commit-reveal RNG + standalone verifier
 packages/db/        Drizzle schema + migrations
 packages/protocol/  zod wire schemas, shared types
-packages/sdk-ts/    agent SDK
-sdk-python/         agent SDK
+packages/sdk-ts/    agent SDK, published to npm as `clawroll`
+sdk-python/         agent SDK, published to PyPI as `clawroll`
+examples/           a starter bot to copy
 infra/              AWS CDK
 ```
 

@@ -22,17 +22,36 @@ import type { TableConfig } from './table.js';
 
 const PORT = Number(process.env['PORT'] ?? 8080);
 
-const TABLE: TableConfig = {
-  tableId: 'main',
-  smallBlind: 50_000,
-  bigBlind: 100_000,
-  maxSeats: 6,
-  minBuyIn: 2_000_000,
-  maxBuyIn: 20_000_000,
-  // Slower than production so a human watching can actually follow the action.
-  actionTimeoutMs: 4_000,
-  seedTimeoutMs: 1_000,
-};
+/**
+ * Two tables, mirroring the deployed room.
+ *
+ * Unraked, like production and for the same reason: bot poker is zero-sum, so with no rake
+ * the chips circulate and the game runs indefinitely. A rake drains the table instead — 5%
+ * took 32.67 of 40 USDC off the real room in about four minutes.
+ */
+const TABLES: TableConfig[] = [
+  {
+    tableId: 'main',
+    smallBlind: 10_000,
+    bigBlind: 20_000,
+    maxSeats: 6,
+    minBuyIn: 1_000_000,
+    maxBuyIn: 5_000_000,
+    // Slower than production so a human watching can actually follow the action.
+    actionTimeoutMs: 4_000,
+    seedTimeoutMs: 1_000,
+  },
+  {
+    tableId: 'high',
+    smallBlind: 50_000,
+    bigBlind: 100_000,
+    maxSeats: 6,
+    minBuyIn: 1_000_000,
+    maxBuyIn: 5_000_000,
+    actionTimeoutMs: 4_000,
+    seedTimeoutMs: 1_000,
+  },
+];
 
 async function main(): Promise<void> {
   const sql = createSql();
@@ -61,7 +80,7 @@ async function main(): Promise<void> {
     {
       ...DEFAULT_SERVER_CONFIG,
       port: PORT,
-      table: TABLE,
+      tables: TABLES,
       autoStartHands: true,
       // Slow enough that a person watching can follow a hand.
       handIntervalMs: 4_000,
@@ -77,24 +96,36 @@ async function main(): Promise<void> {
   console.log(`  read api       /api/tables  /api/hands  /api/leaderboard`);
   console.log(`  spectate       ws://127.0.0.1:${PORT}/spectate`);
 
-  const strategies = [tightAggressive, callingStation, randomBot(7), randomBot(42)];
+  // Five per table, which is what a room worth watching looks like — heads-up poker between
+  // two bots is mostly blinds.
+  const strategies = [
+    tightAggressive, callingStation, randomBot(7), randomBot(42), randomBot(11),
+    tightAggressive, callingStation, randomBot(3), randomBot(23), randomBot(31),
+  ];
   for (const [i, strategy] of strategies.entries()) {
-    const agentId = `dev-${strategy.name}-${randomUUID().slice(0, 6)}`;
+    const table = TABLES[i % TABLES.length]!;
+    // Suffixed with the table, because the same strategy is seated at both and two seats
+    // labelled `calling-station` on different tables is confusing to watch.
+    const displayName = `${strategy.name}-${table.tableId}`;
+    const agentId = `dev-${displayName}-${randomUUID().slice(0, 6)}`;
     await sql`
       INSERT INTO agents (id, display_name, key_prefix, key_hash, derivation_index, deposit_address)
-      VALUES (${agentId}, ${strategy.name}, ${randomUUID()}, ${'dev'},
+      VALUES (${agentId}, ${displayName}, ${randomUUID()}, ${'dev'},
               ${Date.now() * 10 + i}, ${randomUUID()})`;
     // Devnet play money, granted directly rather than deposited — this is a dev harness,
     // not a faucet. Funded deep on purpose: a bot that busts through its bankroll cannot
     // afford the re-buy, and a table that drains to one player stops dealing entirely.
     await ledger.creditDeposit(agentId, 2_000_000_000, `dev:${randomUUID()}`);
 
-    const { apiKey } = memory.register(agentId, strategy.name);
+    const { apiKey } = memory.register(agentId, displayName);
     const bot = new Bot({
       url: `ws://127.0.0.1:${PORT}`,
       apiKey,
-      tableId: TABLE.tableId,
-      buyIn: 10_000_000,
+      tableId: table.tableId,
+      // Must sit inside the table's own bounds. It was 10 USDC against a maxBuyIn of 5,
+      // so every seating was refused and the room sat empty with the bots reporting
+      // themselves as "seated" — they had connected, not sat down.
+      buyIn: 5_000_000,
       strategy,
       rebuys: 1_000,
       // Real agents think; local ones do not, and a hand that finishes in a millisecond is
@@ -102,13 +133,14 @@ async function main(): Promise<void> {
       thinkMs: 600,
     });
     await bot.connect();
-    console.log(`  seated         ${strategy.name}`);
+    console.log(`  seated         ${displayName}`);
   }
 
   const report = setInterval(() => {
-    console.log(
-      `hands ${server.table.handCount} · chips on table ${server.table.totalChips() / 1_000_000} USDC`,
-    );
+    const line = [...server.tables.values()]
+      .map((t) => `${t.tableId} ${t.handCount} hands / ${t.totalChips() / 1_000_000} USDC`)
+      .join(' · ');
+    console.log(line);
   }, 15_000);
   report.unref();
 
