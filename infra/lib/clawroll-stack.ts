@@ -408,6 +408,13 @@ export class ClawrollStack extends Stack {
         // that matters is for agents crossing the public internet.
         CLAWROLL_URL: `ws://${engine.loadBalancer.loadBalancerDnsName}`,
         BOT_KEYS_SECRET_ARN: botKeysResource.ref,
+        // Small relative to a bot's bankroll, on purpose.
+        //
+        // A buy-in a bot cannot afford is a seat that stays empty — and it fails quietly,
+        // because "insufficient funds" is a correct answer that looks like a bug from the
+        // outside. Sized so a bot can lose several buy-ins before it needs the rebalancer,
+        // which is what keeps a table full rather than merely solvent.
+        BOT_BUY_IN_MICROS: String(2_000_000),
       },
       logging: ecs.LogDrivers.awsLogs({ streamPrefix: 'bots', logGroup: botsLogs }),
     });
