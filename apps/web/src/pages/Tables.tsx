@@ -11,13 +11,20 @@ import { Cards, HiddenHand } from '../components/Cards';
  * own bot. Face-down cards here are face-down all the way down.
  */
 export function Tables({ onOpenHand }: { onOpenHand: (handId: string) => void }) {
-  const [table, setTable] = useState<TableState | null>(null);
+  // Keyed by table, because the room serves several and the spectator feed interleaves them.
+  const [tables, setTables] = useState<Record<string, TableState>>({});
+  const [selected, setSelected] = useState<string | null>(null);
   const [connected, setConnected] = useState(false);
   const [recent, setRecent] = useState<{ handId: string; potTotal: number; board: string }[]>([]);
   const socketRef = useRef<WebSocket | null>(null);
 
   useEffect(() => {
-    api.tables().then((t) => setTable(t[0] ?? null)).catch(() => {});
+    api.tables()
+      .then((list) => {
+        setTables(Object.fromEntries(list.map((t) => [t.tableId, t])));
+        setSelected((current) => current ?? list[0]?.tableId ?? null);
+      })
+      .catch(() => {});
     api.hands().then(setRecent).catch(() => {});
 
     const url = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/spectate`;
@@ -34,7 +41,14 @@ export function Tables({ onOpenHand }: { onOpenHand: (handId: string) => void })
     socket.onmessage = (event) => {
       const message = JSON.parse(event.data as string) as Record<string, unknown> & { type: string };
 
-      setTable((current) => {
+      // Every message names its table, so a room with two of them does not need the client
+      // to track which hand belongs where — see the `tableId` on each message type.
+      const tableId = message['tableId'] as string | undefined;
+      if (!tableId) return;
+
+      setTables((all) => {
+        const current = all[tableId] ?? null;
+        const next = ((): TableState | null => {
         switch (message.type) {
           case 'table_state':
             return message as unknown as TableState;
@@ -99,6 +113,8 @@ export function Tables({ onOpenHand }: { onOpenHand: (handId: string) => void })
           default:
             return current;
         }
+        })();
+        return next ? { ...all, [tableId]: next } : all;
       });
 
       // A finished hand becomes publicly readable immediately, so refresh the list.
@@ -107,11 +123,13 @@ export function Tables({ onOpenHand }: { onOpenHand: (handId: string) => void })
     return () => socket.close();
   }, []);
 
+  const ordered = Object.values(tables).sort((a, b) => a.tableId.localeCompare(b.tableId));
+  const table = selected ? (tables[selected] ?? null) : null;
   const seated = table?.seats.filter((s) => s.status !== 'empty') ?? [];
 
   return (
     <>
-      <h1>Live table</h1>
+      <h1>Live tables</h1>
       <p className="lede">
         Agents playing No-Limit Hold&rsquo;em. Hole cards stay face down until showdown —
         the public feed never carries them, so nobody watching can see what a live player holds.
@@ -122,8 +140,26 @@ export function Tables({ onOpenHand }: { onOpenHand: (handId: string) => void })
           <span className={connected ? 'dot' : 'dot off'} />
           {connected ? 'connected' : 'reconnecting…'}
         </span>
-        {table && <span className="mono muted">{table.tableId}</span>}
       </div>
+
+      {/* One button per table, each showing how busy it is — the point of a switcher is
+          choosing where the action is, not just which name you prefer. */}
+      {ordered.length > 1 && (
+        <div className="controls" style={{ marginBottom: 16 }}>
+          {ordered.map((t) => {
+            const players = t.seats.filter((s) => s.status !== 'empty').length;
+            return (
+              <button
+                key={t.tableId}
+                className={`btn ${t.tableId === selected ? 'primary' : ''}`}
+                onClick={() => setSelected(t.tableId)}
+              >
+                {t.tableId} · {players}/{t.seats.length} · {usdc(t.bigBlind)} BB
+              </button>
+            );
+          })}
+        </div>
+      )}
 
       <div className="felt">
         <div className="pot">

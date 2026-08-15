@@ -560,6 +560,7 @@ export class TableRuntime {
         });
         this.deps.io.broadcast({
           type: 'action_taken',
+tableId: this.config.tableId,
           handId: hand.handId,
           seat: event.seat,
           action: event.action,
@@ -570,6 +571,7 @@ export class TableRuntime {
       } else if (event.type === 'street') {
         this.deps.io.broadcast({
           type: 'street',
+tableId: this.config.tableId,
           handId: hand.handId,
           street: event.street as Street,
           board: cardsToString(event.board),
@@ -599,6 +601,7 @@ export class TableRuntime {
     if (contested && result.hands.size > 0) {
       this.deps.io.broadcast({
         type: 'showdown',
+tableId: this.config.tableId,
         handId: hand.handId,
         hands: [...result.hands.entries()].map(([seat, value]) => ({
           seat,
@@ -617,6 +620,7 @@ export class TableRuntime {
 
     this.deps.io.broadcast({
       type: 'hand_end',
+tableId: this.config.tableId,
       handId: hand.handId,
       serverSeed: hand.commitment.serverSeed,
       clientSeeds: [...hand.clientSeeds.entries()]
@@ -802,6 +806,11 @@ export class TableRuntime {
   get currentHandId(): string | null {
     return this.hand?.handId ?? null;
   }
+  /** Which table this is. Handy once a process serves several. */
+  get tableId(): string {
+    return this.config.tableId;
+  }
+
   get handCount(): number {
     return this.handsPlayed;
   }
