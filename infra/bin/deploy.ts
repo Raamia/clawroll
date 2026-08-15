@@ -199,7 +199,13 @@ async function main(): Promise<void> {
   // and simply did not do the thing it was asked to do. Nothing failed, so the only way to
   // notice was to go and check the distribution afterwards and find no aliases on it — which
   // is exactly how this was found.
-  const passthrough = process.argv.slice(2);
+  //
+  // A literal `--` is stripped. `pnpm --filter X deploy:all -- -c foo=bar` forwards the
+  // separator itself as an argument, and cdk then ignores every option after it — so the
+  // context silently never arrives and the deploy reports success having done nothing it was
+  // asked to. Exactly the failure this passthrough was added to fix, reintroduced one layer
+  // up.
+  const passthrough = process.argv.slice(2).filter((arg) => arg !== '--');
   if (passthrough.length > 0) {
     console.log(dim(`  forwarding to cdk: ${passthrough.join(' ')}\n`));
   }
