@@ -385,10 +385,8 @@ export class ClawrollStack extends Stack {
     botsTask.addContainer('bots', {
       image: ecs.ContainerImage.fromAsset('..', {
         file: 'Dockerfile',
-        buildArgs: { SERVICE: 'engine' },
+        buildArgs: { SERVICE: 'bots' },
       }),
-      // The image's default command runs the engine; this runs the fleet instead.
-      command: ['sh', '-c', 'exec node_modules/.bin/tsx apps/engine/src/bots/fleet.ts'],
       environment: {
         NODE_ENV: 'production',
         // Straight to the load balancer. These bots are inside the VPC, so routing them out
