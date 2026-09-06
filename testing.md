@@ -1173,6 +1173,17 @@ green after one fix would have hidden the other two until the next outage.
   asked to, and leaves it unbounded otherwise` pins that the statement timeout is opt-in,
   because the pool that runs migrations must be allowed to build an index.
 
+- **The rebalancer measures the wrong balance.** `rebalance.test.ts › it measures what a bot
+  can actually spend › tops up a bot whose chips are on the table and whose spendable balance
+  cannot cover a seat` gives a bot 10 USDC with 8.5 of it seated and expects a top-up; by
+  holdings it is above the floor and the old code left it alone. `› chooses the donor by what
+  it can spend, not by what it holds` puts 19.5 of a whale's 20 on a table beside a bot with
+  6 in hand, and expects the modest bot to pay and the whale to be untouched on both sides.
+- **A winner's stack never comes back.** `client.test.ts › standing up › cashes the stack out
+  and sits straight back down` calls `leaveTable()` on a seated agent against a real ledger
+  and asserts the round trip: a `cash_out` posted, a second `buy_in` posted, seated again —
+  with the server's own "you are no longer seated" state as the only prompt.
+
 **The storm itself is a script, not a test.** `storm.ts` (kept out of the suite) runs twelve
 agents reconnecting and re-joining 120 times a second for 25 seconds against a local server
 and reports ledger transactions produced, API latency during, and pool state after. It needs
@@ -1316,3 +1327,6 @@ against live data, because an invariant worth testing is worth monitoring.
 | I123 | A public read answers within `httpQueryTimeoutMs`, with 503 if the archive has not | `server.test.ts › answers 503 rather than hanging when the archive is slow` | F30 |
 | I124 | A session idle inside a transaction is ended by Postgres and its pool slot replaced | `session.test.ts › ends a session left idle inside a transaction, and the pool recovers` | F30 |
 | I125 | The statement timeout applies only where asked for; the migration pool is never bounded | `session.test.ts › bounds a statement when asked to, and leaves it unbounded otherwise` | F30 |
+| I126 | A house bot whose spendable balance is below the floor is topped up, whatever it holds on a table | `rebalance.test.ts › tops up a bot whose chips are on the table and whose spendable balance cannot cover a seat` | F30 |
+| I127 | A top-up is funded by spendable balance only; chips on a table are never moved | `rebalance.test.ts › chooses the donor by what it can spend, not by what it holds` | F30 |
+| I128 | Standing up posts a cash-out for the stack and the agent re-seats on its own | `client.test.ts › cashes the stack out and sits straight back down` | F30 |

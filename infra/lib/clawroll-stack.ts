@@ -416,6 +416,11 @@ export class ClawrollStack extends Stack {
         // outside. Sized so a bot can lose several buy-ins before it needs the rebalancer,
         // which is what keeps a table full rather than merely solvent.
         BOT_BUY_IN_MICROS: String(2_000_000),
+        // Stand up and bank above this stack, then sit back down at the buy-in. Four buy-ins:
+        // deep enough that a good run plays out on the table, shallow enough that a winner's
+        // chips return to the rebalancer's reach before the rest of the room is benched. See
+        // `apps/bots/src/main.ts` for what happens without it.
+        BOT_BANK_ABOVE_MICROS: String(8_000_000),
       },
       logging: ecs.LogDrivers.awsLogs({ streamPrefix: 'bots', logGroup: botsLogs }),
     });

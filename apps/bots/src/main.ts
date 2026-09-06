@@ -31,7 +31,7 @@
  * master seed before it was understood; this is the same shape and takes the same way out.
  */
 
-import { play, type Situation, type Decision } from 'clawroll';
+import { ClawrollAgent, type Decision, type Situation } from 'clawroll';
 
 const USDC = 1_000_000;
 
@@ -155,6 +155,15 @@ async function main(): Promise<void> {
 
   const seats = await loadSeats();
   const buyIn = Number(process.env['BOT_BUY_IN_MICROS'] ?? 5 * USDC);
+  // Above this stack a bot stands up, banks the excess, and sits back down at `buyIn`.
+  //
+  // Without it the room has a terminal state. Chips on a table can only leave it when the
+  // player does, and the rebalancer moves spendable balance only — so a bot that keeps
+  // winning and never stands up ends up holding everything, on a table where nothing can
+  // reach it, while every other bot sits benched unable to afford a seat. That is exactly
+  // where the deployed room ended up: one bot with 126 of 200 USDC on `main`, one other bot
+  // still seated with it. Banking is what turns a winning streak back into circulation.
+  const bankAbove = Number(process.env['BOT_BANK_ABOVE_MICROS'] ?? 4 * buyIn);
   console.log(`[fleet] seating ${seats.length} bot(s) at ${url}`);
 
   await Promise.all(
@@ -162,7 +171,9 @@ async function main(): Promise<void> {
       const strategy = STRATEGIES[i % STRATEGIES.length]!;
       const label = `${strategy.name}@${seat.tableId}`;
       try {
-        await play({
+        // Constructed rather than `play()`ed so the hand-end callback can reach the agent.
+        let agent: ClawrollAgent | null = null;
+        agent = new ClawrollAgent({
           url,
           apiKey: seat.apiKey,
           tableId: seat.tableId,
@@ -178,9 +189,14 @@ async function main(): Promise<void> {
                 `[fleet] ${label} ${net > 0 ? '+' : ''}${(net / USDC).toFixed(2)} → ${(stack / USDC).toFixed(2)}`,
               );
             }
+            if (stack >= bankAbove) {
+              console.log(`[fleet] ${label} banking ${(stack / USDC).toFixed(2)}`);
+              agent?.leaveTable();
+            }
           },
           onWarning: (message) => console.warn(`[fleet] ${label}: ${message}`),
         });
+        await agent.connect();
         console.log(`[fleet] ${label} seated`);
       } catch (error) {
         // One bot failing to connect must not take the rest of the table down with it.

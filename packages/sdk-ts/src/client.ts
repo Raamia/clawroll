@@ -74,6 +74,22 @@ export class ClawrollAgent {
   }
 
   /** Leave the table and stop reconnecting. */
+  /**
+   * Stand up. The chips on the table go back to the agent's spendable balance.
+   *
+   * With re-buys remaining the agent sits straight back down at `buyIn`, which is the point.
+   * A winner that never stands up keeps its winnings on the table, where nothing can
+   * redistribute them — the house rebalancer only moves spendable balance — and a room of
+   * bots then drains into whichever one is ahead: one bot came to hold 126 of a room's 200
+   * USDC that way, with the rest benched. Standing up is how the excess gets back into
+   * circulation. Between hands is the time to do it; mid-hand the seat is only marked, and
+   * the runtime releases it once the hand settles.
+   */
+  leaveTable(): void {
+    if (!this.seated) return;
+    this.send({ type: 'leave_table' });
+  }
+
   close(): void {
     this.closing = true;
     this.clearRejoinTimer();

@@ -449,3 +449,57 @@ describe('reconnecting', () => {
     expect(attempts.length).toBeLessThanOrEqual(4);
   }, 15_000);
 });
+
+describe('standing up', () => {
+  /** Distinct ledger transactions of each kind that touched this agent's accounts. */
+  const kinds = async (agentId: string): Promise<Record<string, number>> => {
+    const rows = await sql<{ kind: string; n: string }[]>`
+      SELECT t.kind, count(DISTINCT t.id)::text AS n
+      FROM ledger_txs t
+      JOIN ledger_entries e ON e.tx_id = t.id
+      JOIN accounts a ON a.id = e.account_id
+      WHERE a.agent_id = ${agentId}
+      GROUP BY t.kind`;
+    return Object.fromEntries(rows.map((r) => [r.kind, Number(r.n)]));
+  };
+
+  // `waitUntil` above takes a synchronous check. Handed an async one it sees a Promise,
+  // which is truthy, and returns at once — the first version of this test waited for
+  // nothing and passed. The type error is what caught it.
+  const eventually = async (check: () => Promise<boolean>, what: string, ms = 15_000) => {
+    const deadline = Date.now() + ms;
+    while (!(await check())) {
+      if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
+      await new Promise((r) => setTimeout(r, 50));
+    }
+  };
+
+  it('cashes the stack out and sits straight back down', async () => {
+    // The mechanism that puts a winner's chips back into circulation. What is asserted is the
+    // whole round trip against a real ledger: a cash-out was posted, a second buy-in was
+    // posted, and the agent is seated again without anyone prompting it — the server's
+    // "you are no longer seated" state is the only trigger, and it arrives once.
+    const { server, directory, port } = await startTable();
+    const key = await fundedKey(directory, 'stand-up');
+    const agentId = directory.authenticate(key)!.agentId;
+    const agent = new ClawrollAgent({
+      url: `ws://127.0.0.1:${port}`,
+      apiKey: key,
+      tableId: TABLE.tableId,
+      buyIn: 5_000_000,
+      rebuys: 50,
+      act: ({ legal }) => (legal.canCheck ? { action: 'check' } : { action: 'call' }),
+      onWarning: () => {},
+    });
+    agents.push(agent);
+    await agent.connect();
+    await waitUntil(() => server.table.seatOf(agentId) !== null, 'the first seat');
+    await eventually(async () => (await kinds(agentId))['buy_in'] === 1, 'the first buy-in to post');
+
+    agent.leaveTable();
+
+    await eventually(async () => (await kinds(agentId))['cash_out'] === 1, 'the cash-out to post');
+    await eventually(async () => (await kinds(agentId))['buy_in'] === 2, 'the re-buy to post');
+    await waitUntil(() => server.table.seatOf(agentId) !== null, 'the second seat', 15_000);
+  }, 30_000);
+});

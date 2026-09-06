@@ -40,9 +40,16 @@
 import type { Ledger, Sql } from '@clawroll/db';
 
 export interface RebalanceOptions {
-  /** Below this total (available + in_play), a bot is topped up. */
+  /**
+   * Below this *spendable* balance, a bot is topped up.
+   *
+   * Spendable — `available` — and not total holdings. A buy-in is paid from `available`, so
+   * that is the balance that decides whether a bot can sit down. Measuring holdings instead
+   * benched half the fleet in production: a bot with 8 USDC on one table and 1 in hand was
+   * "rich", was never topped up, and could not afford the 2 USDC seat it was asking for.
+   */
   readonly floorMicros: number;
-  /** How much to bring it back to. Must exceed the floor. */
+  /** How much spendable balance to bring it back to. Must exceed the floor. */
   readonly targetMicros: number;
 }
 
@@ -53,7 +60,10 @@ export interface RebalanceResult {
 
 interface Holding {
   readonly agent_id: string;
-  readonly total: string;
+  /** Spendable now. */
+  readonly available: string;
+  /** Committed to a table; only leaves when the bot stands up. */
+  readonly in_play: string;
 }
 
 export class Rebalancer {
@@ -67,7 +77,7 @@ export class Rebalancer {
     }
   }
 
-  /** Total holdings per house bot, richest first. Never includes anyone else. */
+  /** Spendable and committed balance per house bot. Never includes anyone else. */
   private async holdings(): Promise<Holding[]> {
     // Driven from `agents`, not from `accounts`.
     //
@@ -75,52 +85,54 @@ export class Rebalancer {
     // account rows at all — and starting the join there made it invisible to exactly the
     // query meant to find broke bots. The one case this must never miss was the one it did.
     return this.sql<Holding[]>`
-      SELECT ag.id AS agent_id, coalesce(sum(e.amount_micros), 0)::text AS total
+      SELECT ag.id AS agent_id,
+             coalesce(sum(e.amount_micros) FILTER (WHERE a.type = 'available'), 0)::text AS available,
+             coalesce(sum(e.amount_micros) FILTER (WHERE a.type = 'in_play'), 0)::text AS in_play
       FROM agents ag
       LEFT JOIN accounts a ON a.agent_id = ag.id AND a.type IN ('available', 'in_play')
       LEFT JOIN ledger_entries e ON e.account_id = a.id
       WHERE ag.is_house_bot
       GROUP BY ag.id
-      ORDER BY coalesce(sum(e.amount_micros), 0) DESC`;
+      ORDER BY ag.id`;
   }
 
   /**
-   * One pass: bring every broke house bot back up to target, funded by the richest.
+   * One pass: bring every broke house bot back up to target, funded by whoever can spare it.
    *
-   * Takes from `available` only. Chips sitting `in_play` are on a table in the middle of a
-   * hand, and moving those would be taking money out of a pot that is still being played for.
+   * Every figure here is `available`. Chips sitting `in_play` are on a table in the middle
+   * of a hand — moving those would be taking money out of a pot still being played for — and
+   * they are just as invisible on the other side of the ledger: a bot cannot pay a buy-in
+   * with them. So both "who is broke" and "who can give" are questions about spendable
+   * balance, and the first version of this got both wrong by asking about holdings. It
+   * picked the bot with the biggest stack on the table as the donor, found it had nothing
+   * in hand, and moved nothing — one transfer in three hours while six bots sat benched.
    */
   async runOnce(): Promise<RebalanceResult> {
     const holdings = await this.holdings();
     if (holdings.length < 2) return { moved: 0, transfers: [] };
 
-    const totals = new Map(holdings.map((h) => [h.agent_id, Number(h.total)]));
+    const available = new Map(holdings.map((h) => [h.agent_id, Number(h.available)]));
     const transfers: RebalanceResult['transfers'] = [];
 
     const needy = holdings
-      .filter((h) => Number(h.total) < this.options.floorMicros)
+      .filter((h) => Number(h.available) < this.options.floorMicros)
       .map((h) => h.agent_id);
 
     for (const poor of needy) {
-      const shortfall = this.options.targetMicros - (totals.get(poor) ?? 0);
+      const shortfall = this.options.targetMicros - (available.get(poor) ?? 0);
       if (shortfall <= 0) continue;
 
-      // Recomputed each time: after one transfer the richest may no longer be.
-      const richest = [...totals.entries()]
+      // Recomputed each time: after one transfer the best donor may no longer be.
+      const richest = [...available.entries()]
         .filter(([id]) => id !== poor)
         .sort((a, b) => b[1] - a[1])[0];
       if (!richest) continue;
 
-      const [donor, donorTotal] = richest;
-      // Never leave the donor below the floor itself — that would just move the problem, and
-      // on the next pass it would move back.
-      const spare = donorTotal - this.options.floorMicros;
-      const amount = Math.min(shortfall, spare);
-      if (amount <= 0) continue;
-
-      // Only what is actually spendable. `in_play` is committed to a live hand.
-      const donorAvailable = await this.ledger.balanceOfAgent(donor, 'available');
-      const moving = Math.min(amount, donorAvailable);
+      const [donor, donorAvailable] = richest;
+      // Never leave the donor unable to afford its own next seat — that would just move the
+      // problem, and on the next pass it would move back.
+      const spare = donorAvailable - this.options.floorMicros;
+      const moving = Math.min(shortfall, spare);
       if (moving <= 0) continue;
 
       // The ref carries both parties and the amount, so a retried pass is idempotent while a
@@ -134,8 +146,8 @@ export class Rebalancer {
         ],
       });
 
-      totals.set(donor, donorTotal - moving);
-      totals.set(poor, (totals.get(poor) ?? 0) + moving);
+      available.set(donor, donorAvailable - moving);
+      available.set(poor, (available.get(poor) ?? 0) + moving);
       transfers.push({ from: donor, to: poor, amountMicros: moving });
     }
 

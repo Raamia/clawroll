@@ -140,3 +140,47 @@ describe('keeping bots in the game', () => {
     expect(() => new Rebalancer(sql, ledger, { floorMicros: 5, targetMicros: 5 })).toThrow();
   });
 });
+
+describe('it measures what a bot can actually spend', () => {
+  /** Put some of a bot's balance on a table, the way a buy-in does. */
+  const seat = (id: string, micros: number) => ledger.buyIn(id, micros, `rb_seat:${id}:${micros}`);
+
+  it('tops up a bot whose chips are on the table and whose spendable balance cannot cover a seat', async () => {
+    // What benched half the production fleet. This bot holds 10 USDC — well above the floor —
+    // but 8.5 of it is on a table, and the 1.5 in hand cannot pay a 2 USDC buy-in. Measured
+    // by holdings it is rich and gets nothing; measured by what it can spend it is broke.
+    const stuck = await agent(10_000_000, true);
+    await seat(stuck, 8_500_000);
+    const donor = await agent(50_000_000, true);
+
+    const { transfers } = await rebalancer().runOnce();
+
+    expect(transfers).toEqual([{ from: donor, to: stuck, amountMicros: TARGET - 1_500_000 }]);
+    expect(await ledger.balanceOfAgent(stuck, 'available')).toBe(TARGET);
+    // The chips on the table were not touched.
+    expect(await ledger.balanceOfAgent(stuck, 'in_play')).toBe(8_500_000);
+  });
+
+  it('chooses the donor by what it can spend, not by what it holds', async () => {
+    // The other half of the same failure. The bot with the biggest stack on the table is the
+    // richest by holdings and has little in hand; picking it as donor drained what little it
+    // had, pass after pass, while a bot with a comfortable spendable balance was never asked.
+    //
+    // The whale keeps exactly the floor in hand plus a bit, so it is not itself needy — the
+    // first draft of this test left it with 0.5, which under the rule being tested *is*
+    // broke, and the code correctly topped it up. The test was wrong; the code was not.
+    const broke = await agent(0, true);
+    const whale = await agent(20_000_000, true);
+    await seat(whale, 17_500_000); // 2.5 in hand, 17.5 on the table
+    const modest = await agent(6_000_000, true);
+
+    await rebalancer().runOnce();
+
+    // Funded by the modest bot down to the floor, so the broke one receives its 4 of spare.
+    expect(await ledger.balanceOfAgent(broke, 'available')).toBe(4_000_000);
+    expect(await ledger.balanceOfAgent(modest, 'available')).toBe(FLOOR);
+    // The whale was left alone on both sides. By holdings it was the richest by far.
+    expect(await ledger.balanceOfAgent(whale, 'available')).toBe(2_500_000);
+    expect(await ledger.balanceOfAgent(whale, 'in_play')).toBe(17_500_000);
+  });
+});

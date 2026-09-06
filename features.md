@@ -2143,11 +2143,44 @@ warnings seen in production did not appear locally and remain unexplained. The f
 do not depend on that explanation: whatever puts a connection into that state, it is now
 reclaimed in thirty seconds, and the public site no longer shares the pool it would clog.
 
+**The fourth thing, which was never a bug in the engine: the money stopped circulating.**
+With the storm fixed and deployed, both rooms came back — and then `main` drained to a single
+seat while five bots were refused, over and over, with `insufficient_funds`. The ledger
+summed to zero and the outbox was empty; nothing was lost. It was just all in one place:
+
+```
+bot-one        available   0.00   in_play 126.00   ← seated, has won 63% of the room
+grinder-high   available  38.69   in_play   5.00
+rock-high      available   1.10   in_play   8.20   ← "rich", cannot afford a 2 USDC seat
+station-high   available   0.55   in_play   2.00   ← same
+rock-main      available   0.17   in_play   0.00   ← broke, never topped up
+```
+
+Two mismatches, both between what the rebalancer measured and what a seat costs. It judged
+need by *holdings* — available plus chips on the table — while a buy-in is paid from
+`available` alone, so a bot with 8 USDC on one table and 1 in hand was rich and benched. And
+it chose the donor by holdings too, which was always `bot-one`, whose 126 USDC was entirely on
+a table where nothing can move it: one transfer in three hours, of nothing. Underneath both
+is the fact that chips only leave a table when the player does, and a winner that never stands
+up is a black hole. That is gambler's ruin with the one mechanism meant to correct it looking
+at the wrong number.
+
+**Two changes, at the two layers that own them.** The rebalancer now measures need and
+capacity by `available` — the balance that decides whether a bot can sit down and the only
+one it can move — and still never touches chips on a table. And the fleet banks: above four
+buy-ins a bot stands up, which returns its stack to `available`, and the SDK sits it straight
+back down at the buy-in. Banking is the bot's decision, not the engine's, because it is a
+player's decision: a room does not take chips off a table, a player does. With both, a
+winner's run plays out on the table and then comes back into reach; the expected steady state
+is every bot hovering between the buy-in and the banking line, topped up when it is broke.
+
 **Key files.**
 
 | File | Role |
 | --- | --- |
 | `apps/engine/src/server.ts` | Re-announce an undealable table; keep a refused agent subscribed; refuse a redundant join before the ledger; bound public reads |
+| `apps/wallet-worker/src/rebalance.ts` | Need and donor measured by spendable balance |
+| `apps/bots/src/main.ts` | Bank above `BOT_BANK_ABOVE_MICROS`; `leaveTable()` in the SDK does the rest |
 | `packages/sdk-ts/src/client.ts` | Clear `joinPending`, bound how often it retries; one reconnect per failure, stale sockets ignored |
 | `apps/engine/src/archive.ts` | Reads on their own pool |
 | `packages/db/src/client.ts` | Session timeouts on every pooled connection |
