@@ -1118,6 +1118,35 @@ resources, 62 total, and a clean synth. The reason it was safe to remove was est
 grep — no application code referenced `REDIS_URL` — which is a stronger argument than any test
 could make, since a test can only cover the paths someone thought to write.
 
+### F30 — The quiet-table deadlock
+
+Three dead ends, each independently sufficient to strand an agent forever, so each has its own
+test and each test was confirmed to fail with only its own fix reverted. That mattered here more
+than usual: the first one found was not the last one worth looking for, and a suite that went
+green after one fix would have hidden the other two until the next outage.
+
+- **The table falls silent.** `server.test.ts › a table that cannot deal › keeps announcing
+  itself so a lone agent is not stranded` seats one agent at a table that cannot reach two
+  players, and asserts `table_state` keeps arriving while `hand_start` never does. The second
+  assertion is the one that keeps the test honest — it would also pass if the table started
+  dealing to a single player, which would be a worse bug than the one being fixed.
+- **The announcement floods.** `› does not announce while it is still within the deal interval`
+  pins the pacing to `handIntervalMs` rather than the 250ms tick. Its first draft measured
+  across the *first* deal attempt and failed for the right reason at the wrong moment, which is
+  why it now waits out that attempt before taking its baseline.
+- **A refusal is permanent, server side.** `› keeps a refused agent subscribed so it can try
+  again` fills a one-seat table, has a second agent refused, frees the seat, and asserts the
+  refused agent still receives `table_state`.
+- **A refusal is permanent, client side.** `client.test.ts › an agent that was turned away ›
+  takes the seat once one frees up` drives the same scenario through the real SDK against a
+  real server and a real ledger, and asserts the refused agent takes the seat *on its own*.
+  With the `joinPending` fix reverted this fails by timeout after 15 seconds rather than by
+  assertion — the agent simply never acts, which is exactly how it presented in production.
+
+No test covers the whole outage end to end, and none can: it needs a table to run itself down
+to one player over days of real play. The four above cover each mechanism that made the outage
+irreversible, which is the part that turns a quiet table into a dead one.
+
 ## Invariant catalogue
 
 The running list of properties the system must never violate. Each is enforced by an
@@ -1241,3 +1270,7 @@ against live data, because an invariant worth testing is worth monitoring.
 | I113 | An agent's hands are found regardless of how many hands the room has dealt since | `archive.test.ts › finds an agent whose hands have scrolled past the recent window` | F25 |
 | I114 | A profile and the leaderboard always agree on hands played and net | `archive.test.ts › agrees with the leaderboard on hands played and net` | F25 |
 | I115 | An unknown agent id is absent, never an agent with no hands | `archive.test.ts › returns null for an id nobody has ever used` | F25 |
+| I116 | A table that cannot deal keeps announcing itself, so an unseated agent is never stranded | `server.test.ts › keeps announcing itself so a lone agent is not stranded` | F30 |
+| I117 | A quiet table announces on the deal interval, never on the tick interval | `server.test.ts › does not announce while it is still within the deal interval` | F30 |
+| I118 | A refused agent stays subscribed to the table it asked for | `server.test.ts › keeps a refused agent subscribed so it can try again` | F30 |
+| I119 | A refused agent takes a seat that later frees up, unprompted | `client.test.ts › takes the seat once one frees up` | F30 |

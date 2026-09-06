@@ -9,6 +9,7 @@ import {
   type TableConfig,
 } from '@clawroll/engine';
 import { ClawrollAgent } from './client.js';
+import type { ServerMessage } from '@clawroll/protocol';
 import type { Decision, Situation } from './types.js';
 
 /**
@@ -273,4 +274,70 @@ describe('situation', () => {
     const withBoard = seen.find((s) => s.board !== '');
     if (withBoard) expect(withBoard.board).toMatch(/^[2-9TJQKA][cdhs]/);
   }, 60_000);
+});
+
+describe('an agent that was turned away', () => {
+  /**
+   * A refusal must not be permanent.
+   *
+   * `buyIn()` raises an internal "join in flight" flag that only a `table_state` showing the
+   * agent seated lowers again — and a refused join is precisely the case that never produces
+   * one. The flag stayed raised, so every later `table_state` was ignored and the agent sat
+   * connected, funded and idle for good. In production this is what emptied a table one bot
+   * at a time until it fell below two players and stopped dealing altogether.
+   */
+  it('takes the seat once one frees up', async () => {
+    const oneSeat: TableConfig = { ...TABLE, tableId: `full_${randomUUID().slice(0, 8)}`, maxSeats: 1 };
+    const directory = new InMemoryAgentDirectory();
+    const server = new ClawrollServer(
+      { ...DEFAULT_SERVER_CONFIG, port: 0, tables: [oneSeat], autoStartHands: false },
+      directory,
+      bankroll,
+    );
+    servers.push(server);
+    const port = await server.start();
+
+    const sitter = new ClawrollAgent({
+      url: `ws://127.0.0.1:${port}`,
+      apiKey: await fundedKey(directory, 'sitter'),
+      tableId: oneSeat.tableId,
+      buyIn: 5_000_000,
+      rebuys: 50,
+      act: () => ({ action: 'check' }),
+      onWarning: () => {},
+    });
+    agents.push(sitter);
+    await sitter.connect();
+    const seated = () =>
+      (server.table.tableState() as Extract<ServerMessage, { type: 'table_state' }>).seats.filter(
+        (x) => x.playerId !== null,
+      ).length;
+    await waitUntil(() => seated() === 1, 'the sitter to sit');
+
+    const warnings: string[] = [];
+    const turnedAwayKey = await fundedKey(directory, 'turned-away');
+    const turnedAwayId = directory.authenticate(turnedAwayKey)!.agentId;
+    const turnedAway = new ClawrollAgent({
+      url: `ws://127.0.0.1:${port}`,
+      apiKey: turnedAwayKey,
+      tableId: oneSeat.tableId,
+      buyIn: 5_000_000,
+      rebuys: 50,
+      act: () => ({ action: 'check' }),
+      onWarning: (m) => warnings.push(m),
+    });
+    agents.push(turnedAway);
+    await turnedAway.connect();
+    await waitUntil(() => warnings.length > 0, 'the refusal');
+
+    // The seat opens. The agent has to notice on its own.
+    sitter.close();
+    // The refused agent must claim it without anyone prompting it again.
+    await waitUntil(
+      () => server.table.seatOf(turnedAwayId) !== null,
+      'the refused agent to take the free seat',
+      15_000,
+    );
+    expect(seated()).toBe(1);
+  }, 30_000);
 });

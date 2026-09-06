@@ -190,6 +190,86 @@ describe('the server over real sockets', () => {
     expect(client.closed).toBe(false);
   });
 
+  describe('a table that cannot deal', () => {
+    /**
+     * The deadlock that took the `high` table down for a week in production.
+     *
+     * An agent buys back in only when it sees a `table_state` it is absent from, and a table
+     * with fewer than two players never deals — so once a room emptied below two seats it
+     * fell silent, and silence was exactly the condition that stopped anything from ever
+     * refilling it. The agents stayed connected and funded the whole time.
+     */
+    it('keeps announcing itself so a lone agent is not stranded', async () => {
+      await server.stop();
+      server = new ClawrollServer(config({ autoStartHands: true, handIntervalMs: 20 }), directory);
+      port = await server.start();
+
+      const { apiKey } = directory.register('a1', 'Bot One');
+      const client = await connect(`/agent?key=${apiKey}`);
+      await client.waitFor('welcome');
+      client.send({ type: 'join_table', tableId: 't1', buyIn: 10_000 });
+      await new Promise((r) => setTimeout(r, 60));
+
+      const before = client.of('table_state').length;
+      await new Promise((r) => setTimeout(r, 200));
+
+      expect(client.of('table_state').length).toBeGreaterThan(before);
+      // …and still nothing was dealt, because one player cannot make a hand. The point is
+      // that the table stays audible while it waits, not that it deals anyway.
+      expect(client.of('hand_start')).toHaveLength(0);
+    });
+
+    it('does not announce while it is still within the deal interval', async () => {
+      // The re-announcement rides the same pacing a deal would have used. Without that it
+      // would fire on every 250ms tick and flood a quiet table's spectators.
+      await server.stop();
+      server = new ClawrollServer(config({ autoStartHands: true, handIntervalMs: 10_000 }), directory);
+      port = await server.start();
+
+      const { apiKey } = directory.register('a1', 'Bot One');
+      const client = await connect(`/agent?key=${apiKey}`);
+      await client.waitFor('welcome');
+      client.send({ type: 'join_table', tableId: 't1', buyIn: 10_000 });
+      // Long enough for the first deal attempt to have happened and re-announced once;
+      // what is being measured is the silence *after* it, not the announcement itself.
+      await new Promise((r) => setTimeout(r, 500));
+
+      const before = client.of('table_state').length;
+      await new Promise((r) => setTimeout(r, 300));
+      expect(client.of('table_state').length).toBe(before);
+    });
+  });
+
+  it('keeps a refused agent subscribed so it can try again', async () => {
+    // A refusal used to unsubscribe the agent from the table it had just asked for, which
+    // made the refusal permanent: it stayed connected but never heard another `table_state`,
+    // and `table_state` is the only thing that prompts a retry.
+    const small: TableConfig = { ...TABLE, tableId: 't1', maxSeats: 1 };
+    await server.stop();
+    server = new ClawrollServer(config({ tables: [small] }), directory);
+    port = await server.start();
+
+    const first = directory.register('a1', 'Bot One');
+    const second = directory.register('a2', 'Bot Two');
+
+    const seated = await connect(`/agent?key=${first.apiKey}`);
+    await seated.waitFor('welcome');
+    seated.send({ type: 'join_table', tableId: 't1', buyIn: 10_000 });
+    await new Promise((r) => setTimeout(r, 50));
+
+    const refused = await connect(`/agent?key=${second.apiKey}`);
+    await refused.waitFor('welcome');
+    refused.send({ type: 'join_table', tableId: 't1', buyIn: 10_000 });
+    await refused.waitFor('error');
+
+    // The seat frees up. The refused agent must be able to hear about it.
+    const before = refused.of('table_state').length;
+    seated.send({ type: 'leave_table' });
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(refused.of('table_state').length).toBeGreaterThan(before);
+  });
+
   it('seats an agent that asks to join', async () => {
     const { apiKey } = directory.register('a1', 'Bot One');
     const client = await connect(`/agent?key=${apiKey}`);

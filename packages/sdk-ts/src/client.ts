@@ -158,6 +158,13 @@ export class ClawrollAgent {
 
       case 'error':
         this.warn(`${message.code}: ${message.message}`);
+        // A refused join otherwise wedges the agent for good. `buyIn()` sets `joinPending`,
+        // and only a `table_state` showing us seated clears it — which is exactly the
+        // message a refused join never produces. The agent would then sit connected and
+        // idle forever, ignoring every later `table_state` because the flag says a join is
+        // still in flight. Clearing it while unseated lets the next one retry, which is what
+        // makes an agent recoverable after the balance that caused the refusal is topped up.
+        if (!this.seated) this.joinPending = false;
         break;
 
       default:

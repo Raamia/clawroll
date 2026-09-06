@@ -1992,3 +1992,64 @@ reasoning is fresh.
 | `packages/sdk-ts/README.md` | The npm package page |
 | `sdk-python/tests/test_validation.py` | The Python SDK's first tests |
 | `examples/starter-bot/` | A bot to copy, outside the workspace on purpose |
+
+### F30 — The quiet-table deadlock
+
+**What it does.** Stops a table that empties from staying empty forever. Three separate dead
+ends had to close for that to be true.
+
+**How it presented.** Seven days after deploy, `clawroll.xyz` was serving a poker room with one
+live table instead of two. `high` had dealt its last hand at 05:49 UTC on 30 August and nothing
+since; `main` was down from five bots to three. No alarm, no crash, no error in any log — all
+three ECS services were `running=1` and had been for eight days. The bots were connected the
+whole time, and funded: the last thing `high` recorded was `grinder@high -0.40 → 7.78`, an
+agent with nearly four buy-ins to its name. Nothing was broken in a way anything could report.
+
+**The deadlock.** An agent buys back in when it sees a `table_state` it does not appear in —
+that is the SDK's entire rejoin trigger, and it is the right one, because being absent from the
+public state is exactly what "you have been unseated" means. But `table_state` is only
+broadcast when a hand progresses, and `startHand()` refuses below two players. So the condition
+that empties a table is the same condition that silences the only message capable of refilling
+it. One bot busting at the wrong moment takes the room down permanently.
+
+**Why `main` survived and `high` did not.** Nothing about the rooms differed except the blinds
+— `high` runs at 5× — so its bots busted about five times as often and reached the two-player
+floor first. `main` kept three bots by luck, which is the only thing that was holding the site
+up. It was one bust from going dark the same way.
+
+**Two more dead ends behind the first.** Fixing the broadcast alone would not have been enough,
+and neither would have shown up until the next outage:
+
+- The SDK raises a `joinPending` flag in `buyIn()` that only a `table_state` showing the agent
+  *seated* lowers again. A refused join never produces one, so the flag stayed raised and every
+  later `table_state` was ignored. An agent refused once was done for good — which is what took
+  `rock@main` out on 3 September while its table was still dealing normally.
+- The server deleted an agent's `agentTable` entry when `seat()` refused it. That entry is what
+  subscribes an agent to the table's broadcasts, so a refusal also made the agent deaf to the
+  table it had just asked for. A seat freeing up a second later was something it could never
+  find out about.
+
+Each of the three is individually sufficient to strand an agent, which is why the first one
+found was not the last one worth looking for.
+
+**The fix is at the engine, not the SDK.** The re-announcement lives in the server's tick loop,
+so it works for every client — the Python SDK and anyone's third-party bot included — rather
+than only for agents that upgrade. It rides the same `handIntervalMs` pacing a deal would have
+used, because firing on every 250ms tick would flood a quiet table's spectators.
+
+**What it cost to find.** The bots' own logs contained nothing but routine wins, so the timeline
+had to be reconstructed by bucketing eight days of `[fleet]` lines per table per day. That is
+what showed `high` stopping dead between two days rather than tapering off — an instant stop
+with a solvent agent still seated, which ruled out "the bots ran out of money" and pointed at a
+message that never arrived.
+
+**Operationally.** Restarting the bots service refills both tables immediately, because the SDK
+also buys in on `welcome`, independent of table state. That is worth knowing as a lever, but it
+is a restart papering over a deadlock, not a fix.
+
+**Key files.**
+
+| File | Role |
+| --- | --- |
+| `apps/engine/src/server.ts` | Re-announce an undealable table; keep a refused agent subscribed |
+| `packages/sdk-ts/src/client.ts` | Clear `joinPending` when a join is refused |

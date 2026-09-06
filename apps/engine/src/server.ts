@@ -93,7 +93,7 @@ export class ClawrollServer {
   private ticker: NodeJS.Timeout | null = null;
   private draining = false;
   /** Per table, so a slow table cannot hold up a busy one. */
-  private readonly lastHandEndedAt = new Map<string, number>();
+  private readonly lastDealAttemptAt = new Map<string, number>();
   /**
    * Which table each agent is sitting at.
    *
@@ -166,7 +166,7 @@ export class ClawrollServer {
       // their very first hand.
       nextId: (prefix) => `${prefix}_${randomUUID()}`,
       }));
-      this.lastHandEndedAt.set(tableConfig.tableId, 0);
+      this.lastDealAttemptAt.set(tableConfig.tableId, 0);
     }
 
     this.http = createServer((req, res) => {
@@ -329,9 +329,19 @@ export class ClawrollServer {
       if (!this.config.autoStartHands || table.currentPhase !== 'idle') continue;
       // Paced per table. Sharing one timestamp would let a busy table starve a quiet one of
       // its turn to deal.
-      if (now - (this.lastHandEndedAt.get(tableId) ?? 0) >= this.config.handIntervalMs) {
-        if (table.startHand()) this.lastHandEndedAt.set(tableId, now);
-      }
+      if (now - (this.lastDealAttemptAt.get(tableId) ?? 0) < this.config.handIntervalMs) continue;
+      this.lastDealAttemptAt.set(tableId, now);
+      if (table.startHand()) continue;
+
+      // Too few players to deal, so re-announce the table instead of falling silent.
+      //
+      // An agent buys back in when it sees a `table_state` it is absent from — that is the
+      // SDK's only rejoin trigger. A table that cannot deal never produces one, so a room
+      // that empties below two seats stays empty *permanently*: the agents are still
+      // connected and still funded, waiting on a message that can no longer arrive. That is
+      // what took the `high` table down for a week in production. Re-announcing on the same
+      // cadence a deal would have used gives them the trigger back.
+      this.broadcastFrom(tableId, table.tableState());
     }
     void this.drainToLedger();
   }
@@ -540,7 +550,12 @@ export class ClawrollServer {
           : table.seat(agentId, displayName, buyIn);
 
       if (!result.ok) {
-        this.agentTable.delete(agentId);
+        // The `agentTable` entry deliberately stays. It is what subscribes an agent to this
+        // table's broadcasts, and a `table_state` is the only thing that will ever prompt it
+        // to try joining again. Dropping the entry here made a refusal permanent: the agent
+        // stayed connected but deaf, so a seat that freed up a second later was one it could
+        // never learn about. It is not seated either way — `seat()` said no — and an action
+        // from an unseated agent is rejected on its own merits.
         if (this.bankroll) {
           await this.bankroll.releaseChips(agentId, buyIn, `join-failed:${agentId}:${Date.now()}`);
         }
@@ -581,14 +596,6 @@ export class ClawrollServer {
   }
 
   /**
-   * Send a table's public message to everyone entitled to it.
-   *
-   * Spectators get every table — they are watching a room, and the client picks which one to
-   * render. Agents get only the table they are sitting at, because the SDK treats a
-   * `table_state` it does not appear in as proof it has been unseated, and would try to buy
-   * in again every time another table moved.
-   */
-  /**
    * The table an agent is sitting at, or `null` if it is not seated anywhere.
    *
    * Actions arrive on a socket and name a hand, not a table, so this is the only way to know
@@ -599,6 +606,14 @@ export class ClawrollServer {
     return tableId === undefined ? null : (this.tables.get(tableId) ?? null);
   }
 
+  /**
+   * Send a table's public message to everyone entitled to it.
+   *
+   * Spectators get every table — they are watching a room, and the client picks which one to
+   * render. Agents get only the table they are sitting at, because the SDK treats a
+   * `table_state` it does not appear in as proof it has been unseated, and would try to buy
+   * in again every time another table moved.
+   */
   private broadcastFrom(tableId: string, message: ServerMessage): void {
     for (const connection of this.connections.values()) {
       const agentId = connection.agent?.agentId;
