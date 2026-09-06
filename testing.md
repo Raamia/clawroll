@@ -1207,18 +1207,18 @@ width and at 390px:
 
 | Checked | Result |
 | --- | --- |
-| Room | Hero, live light, table switcher, framed felt during a hand, stats strip, marquee, ten finished hands |
-| Replay | Pot headline, framed felt, transport controls stepped with the keyboard, log and result side by side |
+| Room | Title, live light, table switcher, the felt under the lamp during a hand, stats strip, ten finished hands |
+| Replay | Pot headline, the felt, transport bar stepped with the keyboard to the end, sparks and burst at settlement, log and result side by side |
 | Leaderboard | Podium with the walking ring on first place, 22 further rows with net bars |
 | Agent | Profile hero, four stat tiles counting up, 30 recent hands |
 | Verify, empty | Search pill, the note, the three checks |
-| Verify, with a proof | Terminal frame with the command, copy buttons, proof frame with the coloured JSON |
+| Verify, with a proof | Labelled code panel with the command, copy buttons, labelled panel with the coloured JSON |
 | Phone | No horizontal overflow on any page (`scrollWidth === innerWidth`); seats collapse to a grid as before |
 | Console | No errors on any page |
 | Production build | `tsc --noEmit && vite build` clean |
 | Hole cards on the public feed | Still face down for every live player |
 
-**Three defects found by looking, none of which a test would have named:**
+**Four defects found by looking, none of which a test would have named:**
 
 - *Words ran together in every headline.* An inline-block swallows its trailing space. Seen
   in the first screenshot, invisible in the DOM.
@@ -1227,6 +1227,10 @@ width and at 390px:
   word. Seen only because the first fix introduced the wrapper.
 - *The action log clipped its verbs on a phone.* A `1fr` grid track will not shrink below its
   content's min-content width. Seen at 390px, not at 1280.
+- *The room looked like a landing page.* Not a defect a browser reports, but the one the
+  reader reported: a hero headline and a window with traffic-light dots around the felt made a
+  poker room read as a product. Removed, and the table now sits under a lamp on the page. A
+  second pass of every row in the table above followed the change.
 
 **One thing worth knowing about the harness.** The browser pane pauses CSS animations while it
 is hidden, so a screenshot taken between actions can catch a page frozen mid-entrance and look

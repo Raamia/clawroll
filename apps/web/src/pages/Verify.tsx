@@ -108,7 +108,7 @@ export function Verify({ handId }: { handId: string | null }) {
               <span className="eyebrow">On your machine</span>
               <h2>Check it yourself</h2>
             </div>
-            <Frame title={<Crumbs parts={['terminal', 'verify']} />} status="bash" className="frame-code">
+            <Frame title={<Crumbs parts={['shell']} />} status="runs locally" className="frame-code">
               <code className="cmd">
                 <span className="prompt">$ </span>
                 {command}
@@ -166,7 +166,7 @@ export function Verify({ handId }: { handId: string | null }) {
             stacks. The verifier answers one question: was this deal the one the server
             committed to?
           </p>
-          <Frame title={<Crumbs parts={['proof', `${id.slice(0, 12)}.json`]} />} status="json" className="frame-code">
+          <Frame title={<Crumbs parts={['proof', `${id.slice(0, 12)}…json`]} />} status="served by us" className="frame-code">
             <pre className="proof">
               <Json text={proofJson} />
             </pre>

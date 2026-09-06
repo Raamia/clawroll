@@ -3,7 +3,6 @@ import { api, shortId, usdc, type HandRecord } from '../api';
 import { PokerTable, type PodView, type TableView } from '../components/Table';
 import { Avatar } from '../components/Avatar';
 import { Cards, HiddenHand } from '../components/Cards';
-import { Frame, Crumbs } from '../components/Frame';
 import { Reveal, Words } from '../components/Reveal';
 import { useReducedMotion } from '../hooks';
 import { actionLabel } from '../ui';
@@ -130,74 +129,71 @@ export function Hand({ handId }: { handId: string }) {
         </a>
       </section>
 
-      <Frame
-        title={<Crumbs parts={['clawroll', 'replay', hand.tableId]} />}
-        status={atEnd ? 'complete' : playing ? 'playing' : `step ${step} / ${total}`}
-        live={playing}
-        foot={
-          <div className="replay-bar">
-            <div className="transport">
-              <button className="btn icon" onClick={() => jump(0)} disabled={step === 0} title="Start (Home)" aria-label="Start">
-                <SkipIcon flip />
-              </button>
-              <button
-                className="btn icon"
-                onClick={() => jump(Math.max(0, step - 1))}
-                disabled={step === 0}
-                title="Back (←)"
-                aria-label="Back one action"
-              >
-                <StepIcon flip />
-              </button>
-              <button
-                className={playing ? 'btn play playing' : 'btn play'}
-                onClick={() => (atEnd ? (setStep(0), setPlaying(true)) : setPlaying((p) => !p))}
-                title="Play / pause (space)"
-                aria-label={atEnd ? 'Replay' : playing ? 'Pause' : 'Play'}
-              >
-                {atEnd ? <ReplayIcon /> : playing ? <PauseIcon /> : <PlayIcon />}
-              </button>
-              <button
-                className="btn icon"
-                onClick={() => jump(Math.min(total, step + 1))}
-                disabled={atEnd}
-                title="Forward (→)"
-                aria-label="Forward one action"
-              >
-                <StepIcon />
-              </button>
-              <button className="btn icon" onClick={() => jump(total)} disabled={atEnd} title="End (End)" aria-label="End">
-                <SkipIcon />
-              </button>
-            </div>
+      <PokerTable view={view} />
 
-            <div className="scrub">
-              <input
-                type="range"
-                min={0}
-                max={total}
-                value={step}
-                onChange={(e) => jump(Number(e.target.value))}
-                style={{ '--pct': `${total === 0 ? 100 : (step / total) * 100}%` } as CSSProperties}
-                aria-label="Replay position"
-              />
-              <span className="scrub-count">
-                {step} / {total}
-              </span>
-            </div>
+      <div className="replay-bar">
+        <div className="transport">
+          <button className="btn icon" onClick={() => jump(0)} disabled={step === 0} title="Start (Home)" aria-label="Start">
+            <SkipIcon flip />
+          </button>
+          <button
+            className="btn icon"
+            onClick={() => jump(Math.max(0, step - 1))}
+            disabled={step === 0}
+            title="Back (←)"
+            aria-label="Back one action"
+          >
+            <StepIcon flip />
+          </button>
+          <button
+            className={playing ? 'btn play playing' : 'btn play'}
+            onClick={() => (atEnd ? (setStep(0), setPlaying(true)) : setPlaying((p) => !p))}
+            title="Play / pause (space)"
+            aria-label={atEnd ? 'Replay' : playing ? 'Pause' : 'Play'}
+          >
+            {atEnd ? <ReplayIcon /> : playing ? <PauseIcon /> : <PlayIcon />}
+          </button>
+          <button
+            className="btn icon"
+            onClick={() => jump(Math.min(total, step + 1))}
+            disabled={atEnd}
+            title="Forward (→)"
+            aria-label="Forward one action"
+          >
+            <StepIcon />
+          </button>
+          <button className="btn icon" onClick={() => jump(total)} disabled={atEnd} title="End (End)" aria-label="End">
+            <SkipIcon />
+          </button>
+        </div>
 
-            <div className="segmented">
-              {SPEEDS.map((s, i) => (
-                <button key={s.label} className={i === speed ? 'on' : ''} onClick={() => setSpeed(i)}>
-                  {s.label}
-                </button>
-              ))}
-            </div>
-          </div>
-        }
-      >
-        <PokerTable view={view} />
-      </Frame>
+        <div className="scrub">
+          <input
+            type="range"
+            min={0}
+            max={total}
+            value={step}
+            onChange={(e) => jump(Number(e.target.value))}
+            style={{ '--pct': `${total === 0 ? 100 : (step / total) * 100}%` } as CSSProperties}
+            aria-label="Replay position"
+          />
+          <span className="scrub-count">
+            {step} / {total}
+          </span>
+        </div>
+
+        <span className={playing ? 'replay-state live' : 'replay-state'}>
+          <i className="dot" aria-hidden />
+          {atEnd ? 'complete' : playing ? 'playing' : 'paused'}
+        </span>
+        <div className="segmented">
+          {SPEEDS.map((s, i) => (
+            <button key={s.label} className={i === speed ? 'on' : ''} onClick={() => setSpeed(i)}>
+              {s.label}
+            </button>
+          ))}
+        </div>
+      </div>
 
       <p className="keys">
         <kbd>←</kbd> <kbd>→</kbd> step · <kbd>space</kbd> play · <kbd>home</kbd> <kbd>end</kbd> jump

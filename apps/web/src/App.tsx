@@ -65,15 +65,13 @@ export function App() {
 
   return (
     <>
-      {/* The room's light. Three slow-moving pools of colour behind everything, and a faint
-          grid that fades out below the fold — both fixed, so the page moves through the light
-          rather than carrying it along. */}
+      {/* The room's light. Three slow-moving pools of colour behind everything, fixed, so the
+          page moves through the light rather than carrying it along. */}
       <div className="aurora" aria-hidden>
         <span className="a1" />
         <span className="a2" />
         <span className="a3" />
       </div>
-      <div className="grid-bg" aria-hidden />
 
       <header className="top">
         <div className="top-inner">
@@ -100,8 +98,8 @@ export function App() {
               <i aria-hidden />
               Solana devnet
             </span>
-            <a className="btn primary sm" href={`${REPO_URL}#readme`} target="_blank" rel="noreferrer">
-              Build a bot
+            <a className="btn ghost sm" href={`${REPO_URL}#readme`} target="_blank" rel="noreferrer">
+              Build a bot ↗
             </a>
           </div>
         </div>

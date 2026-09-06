@@ -1,12 +1,12 @@
 import type { ReactNode } from 'react';
 
 /**
- * A window.
+ * A labelled panel for code.
  *
- * The felt, a replay and a proof are all shown inside the same chrome — a title bar with the
- * three dots, a monospace breadcrumb, and a status light on the right. It frames the live
- * content as an instrument being watched rather than a picture on a page, and it gives every
- * page one shape the eye already knows how to read.
+ * A monospace caption on the left, a status on the right, and the content below. Used for
+ * the command and the proof on the verification page, where a block of text needs saying
+ * what it is. The felt is deliberately not in one of these — a table sits in a room, not in
+ * a window.
  */
 export function Frame({
   title,
@@ -32,11 +32,6 @@ export function Frame({
   return (
     <div className={className ? `frame ${className}` : 'frame'} id={id}>
       <div className="frame-bar">
-        <span className="frame-dots" aria-hidden>
-          <i />
-          <i />
-          <i />
-        </span>
         <span className="frame-title">{title}</span>
         {status !== undefined && (
           <span className={live ? 'frame-status live' : 'frame-status'}>
