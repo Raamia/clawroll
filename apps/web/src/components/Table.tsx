@@ -56,6 +56,8 @@ export interface TableView {
   label?: string | undefined;
 }
 
+const SPARKS = [-80, -40, -10, 20, 50, 85, 120];
+
 /** Where a seat's chips sit: on its spoke, clear of the pod and short of the middle. */
 const BET_RX = 26;
 const BET_RY = 28;
@@ -88,6 +90,13 @@ export function PokerTable({ view }: { view: TableView }) {
     <div className="table-stage">
       <div className="felt">
         <div className="felt-mark">{view.label ?? 'clawroll'}</div>
+        {/* A band of light that crosses the cloth every few seconds, so a table between hands
+            still looks lit rather than painted. */}
+        <div className="felt-sheen" aria-hidden />
+        {/* A brighter sweep, once, when a new hand is dealt. The key is what replays it. */}
+        <div className="felt-sweep" key={view.handId ?? 'idle'} aria-hidden>
+          <i />
+        </div>
 
         <div className="table-center">
           <div className={bumped ? 'pot bumped' : 'pot'}>
@@ -122,6 +131,9 @@ export function PokerTable({ view }: { view: TableView }) {
 
         {/* The pot going to whoever won it. Purely a flourish over the felt — the seat's own
             total is what actually says who was paid. */}
+        {(view.awards ?? []).length > 0 && (
+          <div className="pot-burst" key={`burst-${view.handId ?? ''}`} aria-hidden />
+        )}
         {(view.awards ?? []).map((award) => {
           const { dx, dy } = seatOffset(award.seat, view.maxSeats);
           return (
@@ -231,7 +243,18 @@ function Pod({
           {pod.say.text}
         </div>
       )}
-      {pod.won > 0 && <div className={hold ? 'pod-won hold' : 'pod-won'}>+{usdc(pod.won)}</div>}
+      {pod.won > 0 && (
+        <>
+          <div className={hold ? 'pod-won hold' : 'pod-won'}>+{usdc(pod.won)}</div>
+          {/* Seven sparks thrown off the seat as it is paid. Angles are spread round the
+              circle by hand rather than at random, so the burst looks the same every time. */}
+          <span className="sparks" aria-hidden>
+            {SPARKS.map((angle, i) => (
+              <i key={i} style={{ '--a': `${angle}deg`, '--i': i } as CSSProperties} />
+            ))}
+          </span>
+        </>
+      )}
 
       <div className="pod-card">
         <div className="pod-badges">

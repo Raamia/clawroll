@@ -3,6 +3,7 @@ import { api, shortId, usdc, type HandRecord } from '../api';
 import { PokerTable, type PodView, type TableView } from '../components/Table';
 import { Avatar } from '../components/Avatar';
 import { Cards, HiddenHand } from '../components/Cards';
+import { Reveal, Words } from '../components/Reveal';
 import { useReducedMotion } from '../hooks';
 import { actionLabel } from '../ui';
 
@@ -98,62 +99,71 @@ export function Hand({ handId }: { handId: string }) {
     logRef.current?.querySelector('.log-row.now')?.scrollIntoView({ block: 'nearest' });
   }, [step, playing]);
 
-  if (error) return <div className="empty">Could not load hand: {error}</div>;
+  if (error) return <div className="empty" style={{ marginTop: 60 }}>Could not load hand: {error}</div>;
   if (!hand || !state) return <LoadingHand />;
 
   const view = toView(hand, state, sweeping);
+  const potTotal = hand.pots.reduce((sum, p) => sum + p.amount, 0);
 
   return (
     <>
-      <div className="controls" style={{ marginTop: 34, justifyContent: 'space-between' }}>
-        <div>
-          <span className="eyebrow">Replay</span>
+      <section className="page-head">
+        <div style={{ minWidth: 0 }}>
+          <span className="eyebrow" style={{ '--i': 0 } as CSSProperties}>
+            Replay
+          </span>
           {/* The headline is what the hand was worth in the end, not what is in the middle at
               this instant — the felt already shows that, and it moves. */}
-          <h1 style={{ margin: '4px 0 0' }}>
-            {usdc(hand.pots.reduce((sum, p) => sum + p.amount, 0))}{' '}
-            <span className="muted" style={{ fontSize: '0.6em' }}>USDC pot</span>
+          <h1 className="display sm">
+            <Words text={usdc(potTotal)} from={1} />{' '}
+            <span className="muted" style={{ fontSize: '0.5em', fontWeight: 500 }}>
+              <Words text="USDC pot" from={2} />
+            </span>
           </h1>
-          <p className="lede mono" style={{ margin: '8px 0 0' }}>{hand.handId}</p>
+          <p className="idline mono" style={{ '--i': 4 } as CSSProperties}>
+            {hand.handId}
+          </p>
         </div>
-        <a className="btn" href={`#/verify/${hand.handId}`}>
+        <a className="btn primary" href={`#/verify/${hand.handId}`} style={{ '--i': 5 } as CSSProperties}>
           Verify this hand
         </a>
-      </div>
+      </section>
 
       <PokerTable view={view} />
 
       <div className="replay-bar">
-        <div className="controls">
-          <button className="btn icon" onClick={() => jump(0)} disabled={step === 0} title="Start (Home)">
-            ⏮
+        <div className="transport">
+          <button className="btn icon" onClick={() => jump(0)} disabled={step === 0} title="Start (Home)" aria-label="Start">
+            <SkipIcon flip />
           </button>
           <button
             className="btn icon"
             onClick={() => jump(Math.max(0, step - 1))}
             disabled={step === 0}
             title="Back (←)"
+            aria-label="Back one action"
           >
-            ◀
+            <StepIcon flip />
           </button>
           <button
-            className="btn primary"
+            className={playing ? 'btn play playing' : 'btn play'}
             onClick={() => (atEnd ? (setStep(0), setPlaying(true)) : setPlaying((p) => !p))}
             title="Play / pause (space)"
-            style={{ minWidth: 92, justifyContent: 'center' }}
+            aria-label={atEnd ? 'Replay' : playing ? 'Pause' : 'Play'}
           >
-            {atEnd ? '↻ Replay' : playing ? '❚❚ Pause' : '▶ Play'}
+            {atEnd ? <ReplayIcon /> : playing ? <PauseIcon /> : <PlayIcon />}
           </button>
           <button
             className="btn icon"
             onClick={() => jump(Math.min(total, step + 1))}
             disabled={atEnd}
             title="Forward (→)"
+            aria-label="Forward one action"
           >
-            ▶
+            <StepIcon />
           </button>
-          <button className="btn icon" onClick={() => jump(total)} disabled={atEnd} title="End (End)">
-            ⏭
+          <button className="btn icon" onClick={() => jump(total)} disabled={atEnd} title="End (End)" aria-label="End">
+            <SkipIcon />
           </button>
         </div>
 
@@ -172,6 +182,10 @@ export function Hand({ handId }: { handId: string }) {
           </span>
         </div>
 
+        <span className={playing ? 'replay-state live' : 'replay-state'}>
+          <i className="dot" aria-hidden />
+          {atEnd ? 'complete' : playing ? 'playing' : 'paused'}
+        </span>
         <div className="segmented">
           {SPEEDS.map((s, i) => (
             <button key={s.label} className={i === speed ? 'on' : ''} onClick={() => setSpeed(i)}>
@@ -185,63 +199,75 @@ export function Hand({ handId }: { handId: string }) {
         <kbd>←</kbd> <kbd>→</kbd> step · <kbd>space</kbd> play · <kbd>home</kbd> <kbd>end</kbd> jump
       </p>
 
-      <h2>Action log</h2>
-      <div className="rows" ref={logRef} style={{ maxHeight: 420, overflowY: 'auto', paddingRight: 4 }}>
-        {hand.actions.map((action, i) => {
-          const seat = hand.seats.find((s) => s.seat === action.seat);
-          const say = actionLabel(action.action, action.amount, 1);
-          const when = i < step ? 'past' : i === step ? 'now' : '';
-          return (
-            <div
-              key={i}
-              className={`log-row ${when}`}
-              onClick={() => jump(i + 1)}
-              role="button"
-              tabIndex={0}
-              onKeyDown={(e) => e.key === 'Enter' && jump(i + 1)}
-            >
-              <span className="log-street">{action.street}</span>
-              <Avatar id={seat?.agentId ?? String(action.seat)} size="sm" />
-              <span className="grow ellipsis" style={{ fontSize: 13 }}>
-                {seat ? shortId(seat.agentId, 22) : `seat ${action.seat}`}
-              </span>
-              <span className={`log-verb ${say.kind}`}>{action.action}</span>
-              {action.amount > 0 && <span className="num" style={{ fontSize: 12.5 }}>{usdc(action.amount)}</span>}
-            </div>
-          );
-        })}
-      </div>
+      <div className="split">
+        <Reveal as="section">
+          <div className="section-head">
+            <span className="eyebrow">{total} decisions</span>
+            <h2>Action log</h2>
+          </div>
+          <div className="rows log" ref={logRef}>
+            {hand.actions.map((action, i) => {
+              const seat = hand.seats.find((s) => s.seat === action.seat);
+              const say = actionLabel(action.action, action.amount, 1);
+              const when = i < step ? 'past' : i === step ? 'now' : '';
+              return (
+                <div
+                  key={i}
+                  className={`log-row ${when}`}
+                  onClick={() => jump(i + 1)}
+                  role="button"
+                  tabIndex={0}
+                  onKeyDown={(e) => e.key === 'Enter' && jump(i + 1)}
+                >
+                  <span className="log-street">{action.street}</span>
+                  <Avatar id={seat?.agentId ?? String(action.seat)} size="sm" />
+                  <span className="grow ellipsis" style={{ fontSize: 13 }}>
+                    {seat ? shortId(seat.agentId, 22) : `seat ${action.seat}`}
+                  </span>
+                  <span className={`log-verb ${say.kind}`}>{action.action}</span>
+                  {action.amount > 0 && <span className="num" style={{ fontSize: 12.5 }}>{usdc(action.amount)}</span>}
+                </div>
+              );
+            })}
+          </div>
+        </Reveal>
 
-      <h2>Result</h2>
-      <div className="rows">
-        {hand.seats.map((seat) => {
-          const net = seat.finalStack - seat.startingStack;
-          return (
-            <a key={seat.seat} className="row" href={`#/agent/${encodeURIComponent(seat.agentId)}`}>
-              <Avatar id={seat.agentId} />
-              <span className="grow" style={{ minWidth: 0 }}>
-                <div className="ellipsis" style={{ fontSize: 13.5, fontWeight: 550 }}>
-                  {shortId(seat.agentId, 26)}
-                </div>
-                <div className="mono faint">
-                  seat {seat.seat}
-                  {seat.seat === hand.buttonSeat ? ' · button' : ''}
-                </div>
-              </span>
-              {seat.holeCards ? <Cards cards={seat.holeCards} size="sm" dealt={false} tight /> : <HiddenHand size="sm" />}
-              <span className="num" style={{ width: 132, textAlign: 'right' }}>
-                <span className="faint">{usdc(seat.startingStack)} →</span> {usdc(seat.finalStack)}
-              </span>
-              <span
-                className={`num ${net > 0 ? 'win' : net < 0 ? 'lose' : 'faint'}`}
-                style={{ width: 74, textAlign: 'right', fontSize: 14 }}
-              >
-                {net > 0 ? '+' : ''}
-                {usdc(net)}
-              </span>
-            </a>
-          );
-        })}
+        <Reveal as="section" delay={90}>
+          <div className="section-head">
+            <span className="eyebrow">{hand.seats.length} seats</span>
+            <h2>Result</h2>
+          </div>
+          <div className="rows stagger">
+            {hand.seats.map((seat, i) => {
+              const net = seat.finalStack - seat.startingStack;
+              return (
+                <a
+                  key={seat.seat}
+                  className="row result-row"
+                  href={`#/agent/${encodeURIComponent(seat.agentId)}`}
+                  style={{ '--i': i } as CSSProperties}
+                >
+                  <Avatar id={seat.agentId} />
+                  <span className="grow" style={{ minWidth: 0 }}>
+                    <div className="ellipsis agent-name">{shortId(seat.agentId, 26)}</div>
+                    <div className="mono faint">
+                      seat {seat.seat}
+                      {seat.seat === hand.buttonSeat ? ' · button' : ''}
+                    </div>
+                  </span>
+                  {seat.holeCards ? <Cards cards={seat.holeCards} size="sm" dealt={false} tight /> : <HiddenHand size="sm" />}
+                  <span className="num result-stacks">
+                    <span className="faint">{usdc(seat.startingStack)} →</span> {usdc(seat.finalStack)}
+                  </span>
+                  <span className={`num result-net ${net > 0 ? 'win' : net < 0 ? 'lose' : 'faint'}`}>
+                    {net > 0 ? '+' : ''}
+                    {usdc(net)}
+                  </span>
+                </a>
+              );
+            })}
+          </div>
+        </Reveal>
       </div>
     </>
   );
@@ -250,10 +276,53 @@ export function Hand({ handId }: { handId: string }) {
 function LoadingHand() {
   return (
     <>
-      <div className="skeleton" style={{ height: 30, width: 220, margin: '38px 0 10px' }} />
-      <div className="skeleton" style={{ height: 260, borderRadius: 999 }} />
-      <div className="skeleton" style={{ height: 62, marginTop: 20 }} />
+      <div className="skeleton" style={{ height: 14, width: 70, margin: '58px 0 16px' }} />
+      <div className="skeleton" style={{ height: 44, width: 260, marginBottom: 30 }} />
+      <div className="skeleton" style={{ height: 420, borderRadius: 22 }} />
     </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Transport icons
+// ---------------------------------------------------------------------------
+
+function PlayIcon() {
+  return (
+    <svg viewBox="0 0 20 20" fill="currentColor" aria-hidden>
+      <path d="M6 4.3v11.4c0 .8.9 1.3 1.6.9l9-5.7c.6-.4.6-1.4 0-1.8l-9-5.7c-.7-.4-1.6.1-1.6.9Z" />
+    </svg>
+  );
+}
+function PauseIcon() {
+  return (
+    <svg viewBox="0 0 20 20" fill="currentColor" aria-hidden>
+      <rect x="4.5" y="4" width="4" height="12" rx="1.2" />
+      <rect x="11.5" y="4" width="4" height="12" rx="1.2" />
+    </svg>
+  );
+}
+function ReplayIcon() {
+  return (
+    <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <path d="M4 10a6 6 0 1 0 1.8-4.3" />
+      <path d="M4 3.5V7h3.5" />
+    </svg>
+  );
+}
+function StepIcon({ flip }: { flip?: boolean | undefined }) {
+  return (
+    <svg viewBox="0 0 20 20" fill="currentColor" aria-hidden style={flip ? { transform: 'scaleX(-1)' } : undefined}>
+      <path d="M6 5.2v9.6c0 .7.8 1.1 1.4.7l7-4.8c.5-.4.5-1.1 0-1.5l-7-4.8c-.6-.4-1.4 0-1.4.8Z" />
+    </svg>
+  );
+}
+function SkipIcon({ flip }: { flip?: boolean | undefined }) {
+  return (
+    <svg viewBox="0 0 20 20" fill="currentColor" aria-hidden style={flip ? { transform: 'scaleX(-1)' } : undefined}>
+      <path d="M4 5.2v9.6c0 .7.8 1.1 1.4.7l6.4-4.8c.5-.4.5-1.1 0-1.5L5.4 4.4C4.8 4 4 4.4 4 5.2Z" />
+      <rect x="13.5" y="4.5" width="2.5" height="11" rx="1" />
+    </svg>
   );
 }
 

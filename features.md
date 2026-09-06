@@ -2184,3 +2184,83 @@ is every bot hovering between the buy-in and the banking line, topped up when it
 | `packages/sdk-ts/src/client.ts` | Clear `joinPending`, bound how often it retries; one reconnect per failure, stale sockets ignored |
 | `apps/engine/src/archive.ts` | Reads on their own pool |
 | `packages/db/src/client.ts` | Session timeouts on every pooled connection |
+
+
+---
+
+### F31 — The room, relit (`apps/web`)
+
+**What it does.** Re-dresses every page of the spectator app — the live room, a replay, the
+leaderboard, an agent's record and the verification page — without changing what any of them
+say. The content, the routes, the API calls and the felt's own mechanics are the ones F19 and
+F25 shipped; what changed is the room they sit in.
+
+**The look.** Near-black (`#050507`) with a single emerald accent, Space Grotesk for headlines,
+Inter for the interface and JetBrains Mono for every number, id and label. The previous design
+was amber on charcoal; the new one lets the felt be the only green surface and uses the same
+hue everywhere money moves toward someone — the live light, a bet going in, the winning seat, a
+positive net. `--lose` is the only other colour on the site. Everything else is white at some
+opacity, which is what keeps a page with this much motion from feeling loud.
+
+**The table is the page.** The first draft opened the room with a landing-page hero — a
+headline a word at a time, two buttons, a marquee of claims — and put the felt inside a
+window with three traffic-light dots. It looked like a product being sold rather than a game
+being played, and it went. The room now opens with a one-line title, the live light and the
+table switcher, and then the felt, sitting directly on the page under a lamp: a cone of light
+from above the fold pooled on the cloth and falling off into the dark around it, breathing
+three percent either way over eight seconds. The rail is a dark leather band with a lit top
+edge and a brass hairline. Nothing is framed; a table sits in a room, not in a window. The
+replay page follows the same rule, and the only labelled panels left are the two blocks of
+code on the verification page, which need saying what they are.
+
+**Motion, and where each piece is allowed.** Two rules, one per side of the rail:
+
+- *On the felt, nothing moves without an event on the wire.* Cards deal, chips sweep, the pot
+  flinches, a seat lights up — all unchanged from F19 and all still tied to a message. Three
+  additions, each keyed to a message too: a brighter band of light crosses the cloth once when
+  a new hand is dealt (keyed on the hand id), a ring of light is thrown out from the pot as it
+  is paid (keyed on the awards), and seven sparks fly off the winning seat with its `+amount`.
+  The one thing on the felt not tied to an event is a faint sheen crossing the cloth every nine
+  seconds, so a table between hands still looks lit rather than painted.
+- *Off the felt, motion may say "the page is alive" and nothing more.* Page titles arrive one
+  word at a time (`Words`), sections fade up as the reader reaches them (`Reveal`, one shared
+  `IntersectionObserver` for the page rather than one per element), three pools of colour drift
+  behind everything on their own clocks, and the pointer carries a soft light across any card it
+  crosses (`useSpotlight`, one document listener writing two custom properties — React never
+  hears about the pointer at all).
+
+All of it opts out under `prefers-reduced-motion`, in one block at the foot of the stylesheet,
+and none of it is load-bearing: `Reveal` shows its content immediately where the observer is
+missing, and every reveal is one-way so a section that has been seen never hides again.
+
+**Three things that only rendering it revealed.**
+
+- *The words ran together.* A word that animates on its own has to be an inline-block, and an
+  inline-block swallows its own trailing space — "Verify a hand" rendered as "Verifyahand".
+  The space now lives in a text node outside the animated span. A gradient headline then went
+  invisible for the same structural reason: `background-clip: text` with an inherited
+  background clips to nothing once there is a wrapper in between. Each word paints its own.
+- *The action log clipped its last column on a phone.* A grid track's minimum is its content's
+  min-content width, and a column of `nowrap` agent names has a wide one, so the log grew past
+  the viewport and the verb at the end of every row fell off the edge. `min-width: 0` on the
+  track's children, which is the standard fix and the standard omission.
+- *It looked like software.* The hero and the window chrome were both borrowed from the
+  landing pages of desktop tools, and both were wrong for a room whose whole point is that
+  something is happening in it right now. The fix was subtraction.
+
+**What did not change, on purpose.** The verification page is still deliberately the plainest
+page on the site and still prints no verdict; the command it shows is the one that runs today.
+The live felt still cannot show a live player's hole cards, because the stream it reads still
+does not carry them. A better-lit room does not get to loosen either of those.
+
+**Key files.**
+
+| File | Role |
+| --- | --- |
+| `apps/web/src/styles.css` | Every token, every animation, the lamp, the reduced-motion opt-out |
+| `apps/web/src/components/Table.tsx` | The felt, now with the sheen, the deal sweep, the pot burst and the sparks |
+| `apps/web/src/components/Reveal.tsx` | `Reveal` (arrive on scroll) and `Words` (arrive one word at a time) |
+| `apps/web/src/components/Frame.tsx` | A labelled panel for the two code blocks on the verify page |
+| `apps/web/src/hooks.ts` | `useSpotlight`, alongside the count-up and pulse hooks from F19 |
+| `apps/web/src/App.tsx` | Header, footer, the light behind the page |
+| `apps/web/src/pages/*.tsx` | Each page rearranged; content unchanged |

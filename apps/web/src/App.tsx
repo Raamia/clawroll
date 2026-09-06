@@ -4,6 +4,7 @@ import { Hand } from './pages/Hand';
 import { Leaderboard } from './pages/Leaderboard';
 import { Verify } from './pages/Verify';
 import { Agent } from './pages/Agent';
+import { useSpotlight } from './hooks';
 
 /**
  * Hash routing, on purpose.
@@ -39,8 +40,11 @@ function keyOf(route: Route): string {
   }
 }
 
+export const REPO_URL = 'https://github.com/Raamia/clawroll';
+
 export function App() {
   const [route, setRoute] = useState<Route>(() => parse(location.hash));
+  useSpotlight();
 
   useEffect(() => {
     const onChange = () => {
@@ -61,6 +65,14 @@ export function App() {
 
   return (
     <>
+      {/* The room's light. Three slow-moving pools of colour behind everything, fixed, so the
+          page moves through the light rather than carrying it along. */}
+      <div className="aurora" aria-hidden>
+        <span className="a1" />
+        <span className="a2" />
+        <span className="a3" />
+      </div>
+
       <header className="top">
         <div className="top-inner">
           <a href="#/" className="brand">
@@ -73,15 +85,23 @@ export function App() {
               claw<em>roll</em>
             </span>
           </a>
-          {/* Stated everywhere, not buried in a footer: this is play money by design. */}
-          <span className="pill-devnet" title="Devnet USDC is faucet-issued and has no market value">
-            Solana devnet
-          </span>
-          <nav className="main">
+
+          <nav className="main" aria-label="Primary">
             {link('#/', 'Room', route.name === 'tables' || route.name === 'hand')}
             {link('#/leaderboard', 'Leaderboard', route.name === 'leaderboard')}
             {link('#/verify', 'Verify', route.name === 'verify')}
           </nav>
+
+          <div className="top-right">
+            {/* Stated everywhere, not buried in a footer: this is play money by design. */}
+            <span className="pill-devnet" title="Devnet USDC is faucet-issued and has no market value">
+              <i aria-hidden />
+              Solana devnet
+            </span>
+            <a className="btn ghost sm" href={`${REPO_URL}#readme`} target="_blank" rel="noreferrer">
+              Build a bot ↗
+            </a>
+          </div>
         </div>
       </header>
 
@@ -96,20 +116,40 @@ export function App() {
           {route.name === 'agent' && <Agent agentId={route.agentId} />}
           {route.name === 'verify' && <Verify handId={route.handId} />}
         </div>
-
-        <footer className="site">
-          <span>Clawroll — poker for agents.</span>
-          <span>Devnet USDC. No market value, by design.</span>
-          <a href="#/verify" style={{ marginLeft: 'auto' }}>
-            Every hand is verifiable →
-          </a>
-        </footer>
       </main>
+
+      <footer className="site">
+        <div className="foot-inner">
+          <div className="foot-brand">
+            <a href="#/" className="brand">
+              <span className="brand-mark">
+                <SpadeIcon />
+              </span>
+              <span>
+                claw<em>roll</em>
+              </span>
+            </a>
+            <p>Poker for agents. Devnet USDC — no market value, by design.</p>
+          </div>
+          <nav className="foot-links" aria-label="Footer">
+            <a href="#/">Room</a>
+            <a href="#/leaderboard">Leaderboard</a>
+            <a href="#/verify">Verify</a>
+            <a href={REPO_URL} target="_blank" rel="noreferrer">
+              GitHub ↗
+            </a>
+          </nav>
+          <a className="foot-cta" href="#/verify">
+            Every hand is verifiable
+            <span aria-hidden>→</span>
+          </a>
+        </div>
+      </footer>
     </>
   );
 }
 
-function SpadeIcon() {
+export function SpadeIcon() {
   return (
     <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden>
       <path d="M12 2.6c-.5 2.6-3.4 4.4-5.4 6.3-2.6 2.4-2.1 6.2.8 7.3 1.6.6 3-.1 3.8-1.1-.2 2-1 3.6-2.2 4.6v1.7h6v-1.7c-1.2-1-2-2.6-2.2-4.6.8 1 2.2 1.7 3.8 1.1 2.9-1.1 3.4-4.9.8-7.3-2-1.9-4.9-3.7-5.4-6.3Z" />

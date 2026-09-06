@@ -88,3 +88,24 @@ export function useCopy(resetMs = 1600): [string | null, (text: string, label: s
     },
   ];
 }
+
+/**
+ * A light that follows the pointer across any `.spot` surface.
+ *
+ * One listener on the document rather than one per card: the position is written into two
+ * custom properties on whichever surface is under the pointer, and the stylesheet paints a
+ * radial highlight there. Nothing re-renders — React never hears about the pointer at all.
+ */
+export function useSpotlight(): void {
+  useEffect(() => {
+    const onMove = (event: PointerEvent) => {
+      const target = event.target instanceof Element ? event.target.closest<HTMLElement>('.spot') : null;
+      if (!target) return;
+      const box = target.getBoundingClientRect();
+      target.style.setProperty('--mx', `${event.clientX - box.left}px`);
+      target.style.setProperty('--my', `${event.clientY - box.top}px`);
+    };
+    addEventListener('pointermove', onMove, { passive: true });
+    return () => removeEventListener('pointermove', onMove);
+  }, []);
+}

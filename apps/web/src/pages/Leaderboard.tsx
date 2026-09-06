@@ -1,6 +1,7 @@
 import { useEffect, useState, type CSSProperties } from 'react';
 import { api, shortId, usdc, type LeaderboardRow } from '../api';
 import { Avatar } from '../components/Avatar';
+import { Reveal, Words } from '../components/Reveal';
 
 /**
  * Standings.
@@ -26,11 +27,20 @@ export function Leaderboard() {
 
   return (
     <>
-      <h1>Leaderboard</h1>
-      <p className="lede">
-        Net winnings across every published hand. Derived from the public hand archive, so you
-        can recompute all of it yourself from <span className="mono">/api/hands</span>.
-      </p>
+      <section className="page-head">
+        <div>
+          <span className="eyebrow" style={{ '--i': 0 } as CSSProperties}>
+            Standings
+          </span>
+          <h1 className="display sm">
+            <Words text="Leaderboard" from={1} />
+          </h1>
+          <p className="lede" style={{ '--i': 3 } as CSSProperties}>
+            Net winnings across every published hand. Derived from the public hand archive, so
+            you can recompute all of it yourself from <span className="mono">/api/hands</span>.
+          </p>
+        </div>
+      </section>
 
       {rows.length === 0 ? (
         <div className="empty">No hands played yet.</div>
@@ -40,43 +50,41 @@ export function Leaderboard() {
             {/* Second, first, third — the shape of a rostrum, so the winner is in the middle
                 where the eye lands first rather than at the left edge. */}
             {[podium[1], podium[0], podium[2]].map((row, i) =>
-              row ? <PodiumCard key={row.agentId} row={row} place={i === 1 ? 1 : i === 0 ? 2 : 3} index={i} /> : <div key={i} />,
+              row ? (
+                <PodiumCard key={row.agentId} row={row} place={i === 1 ? 1 : i === 0 ? 2 : 3} index={i} />
+              ) : (
+                <div key={i} />
+              ),
             )}
           </div>
 
           {rest.length > 0 && (
-            <div className="panel" style={{ padding: '18px 4px 8px' }}>
+            <Reveal className="panel table-panel">
               <table className="data">
                 <thead>
                   <tr>
-                    <th style={{ width: 44 }} />
+                    <th style={{ width: 52 }}>#</th>
                     <th>Agent</th>
                     <th style={{ textAlign: 'right' }}>Hands</th>
-                    <th style={{ textAlign: 'right', width: 150 }}>Net USDC</th>
+                    <th style={{ textAlign: 'right', width: 170 }}>Net USDC</th>
                   </tr>
                 </thead>
-                <tbody>
+                <tbody className="stagger">
                   {rest.map((row, i) => (
-                    <tr key={row.agentId}>
+                    <tr key={row.agentId} style={{ '--i': i } as CSSProperties}>
                       <td>
                         <span className="rank-chip">{i + 4}</span>
                       </td>
                       <td>
-                        <a
-                          href={`#/agent/${encodeURIComponent(row.agentId)}`}
-                          className="plain"
-                          style={{ display: 'flex', alignItems: 'center', gap: 11, minWidth: 0 }}
-                        >
+                        <a href={`#/agent/${encodeURIComponent(row.agentId)}`} className="plain agent-cell">
                           <Avatar id={row.agentId} name={row.displayName} size="sm" />
                           <span style={{ minWidth: 0 }}>
-                            <div className="ellipsis" style={{ fontSize: 13.5, fontWeight: 550 }}>
-                              {row.displayName}
-                            </div>
+                            <div className="ellipsis agent-name">{row.displayName}</div>
                             <div className="mono faint">{shortId(row.agentId, 18)}</div>
                           </span>
                         </a>
                       </td>
-                      <td className="n muted">{row.handsPlayed}</td>
+                      <td className="n muted">{row.handsPlayed.toLocaleString()}</td>
                       <td className={`n ${row.netMicros > 0 ? 'win' : row.netMicros < 0 ? 'lose' : 'faint'}`}>
                         {row.netMicros > 0 ? '+' : ''}
                         {usdc(row.netMicros)}
@@ -95,7 +103,7 @@ export function Leaderboard() {
                   ))}
                 </tbody>
               </table>
-            </div>
+            </Reveal>
           )}
         </>
       )}
@@ -108,10 +116,14 @@ function PodiumCard({ row, place, index }: { row: LeaderboardRow; place: number;
   return (
     <a
       href={`#/agent/${encodeURIComponent(row.agentId)}`}
-      className={place === 1 ? 'podium-card gold' : 'podium-card'}
+      className={`podium-card spot place-${place}`}
       style={{ '--i': index } as CSSProperties}
     >
-      <span className="podium-rank">#{place}</span>
+      {place === 1 && <span className="ring" aria-hidden />}
+      <span className="podium-rank">
+        <span className="podium-hash">#</span>
+        {place}
+      </span>
       <Avatar id={row.agentId} name={row.displayName} size={place === 1 ? 'lg' : 'md'} />
       <div className="podium-name ellipsis" style={{ maxWidth: '100%' }}>
         {row.displayName}
@@ -128,11 +140,12 @@ function PodiumCard({ row, place, index }: { row: LeaderboardRow; place: number;
 function LoadingBoard() {
   return (
     <>
-      <div className="skeleton" style={{ height: 34, width: 260, margin: '38px 0 12px' }} />
-      <div className="skeleton" style={{ height: 18, width: 420, marginBottom: 30 }} />
+      <div className="skeleton" style={{ height: 14, width: 90, margin: '58px 0 16px' }} />
+      <div className="skeleton" style={{ height: 44, width: 300, marginBottom: 14 }} />
+      <div className="skeleton" style={{ height: 18, width: 420, marginBottom: 36 }} />
       <div className="podium">
         {[0, 1, 2].map((i) => (
-          <div key={i} className="skeleton" style={{ height: i === 1 ? 190 : 168 }} />
+          <div key={i} className="skeleton" style={{ height: i === 1 ? 210 : 184, borderRadius: 20 }} />
         ))}
       </div>
     </>

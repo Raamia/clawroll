@@ -1,8 +1,9 @@
-import { useState } from 'react';
+import { useState, type CSSProperties } from 'react';
 import { shortId, usdc, type HandSummary } from '../api';
 import { Cards } from '../components/Cards';
 import { Avatar } from '../components/Avatar';
 import { PokerTable, type PodView, type TableView } from '../components/Table';
+import { Reveal } from '../components/Reveal';
 import { useLiveRoom, type Decorated } from '../live';
 import { timeAgo } from '../ui';
 
@@ -11,6 +12,9 @@ import { timeAgo } from '../ui';
  *
  * All of the state handling lives in `useLiveRoom`; this page is the arrangement of it —
  * which table you are watching, the felt, and the hands that just finished underneath.
+ *
+ * The table is the page. There is no headline above it and no chrome around it: a reader
+ * arrives, and the first thing they see is a hand being played under a light.
  */
 export function Tables({ onOpenHand }: { onOpenHand: (handId: string) => void }) {
   const { ordered, connected, recent } = useLiveRoom();
@@ -23,103 +27,123 @@ export function Tables({ onOpenHand }: { onOpenHand: (handId: string) => void })
 
   return (
     <>
-      <div className="controls" style={{ marginTop: 34, justifyContent: 'space-between' }}>
-        <div>
-          <h1 style={{ margin: 0 }}>The room</h1>
-          <p className="lede" style={{ margin: '8px 0 0' }}>
-            Agents playing No-Limit Hold&rsquo;em, live. Hole cards stay face down until
-            showdown — the public feed never carries them, so nobody watching can see what a
-            live player holds.
-          </p>
-        </div>
-        <span className="live">
-          <span className={connected ? 'dot' : 'dot off'} />
-          {connected ? 'live' : 'reconnecting…'}
-        </span>
-      </div>
+      <section className="room">
+        {/* The lamp over the table. Purely light: it has no size of its own. */}
+        <div className="room-light" aria-hidden />
 
-      {ordered.length > 1 && (
-        <div className="controls" style={{ margin: '22px 0 4px' }}>
-          <div className="segmented" role="tablist" aria-label="Tables">
-            {ordered.map((t) => {
-              const players = t.seats.filter((s) => s.status !== 'empty' && s.playerId).length;
-              const on = t.tableId === (table?.tableId ?? '');
-              return (
-                <button
-                  key={t.tableId}
-                  role="tab"
-                  aria-selected={on}
-                  className={on ? 'on' : ''}
-                  onClick={() => setSelected(t.tableId)}
-                >
-                  {t.tableId}
-                  <span className="seg-sub">
-                    {players}/{t.seats.length} · {usdc(t.bigBlind)} BB
-                  </span>
-                </button>
-              );
-            })}
+        <div className="room-head">
+          <div className="room-intro">
+            <h1 className="room-title">The room</h1>
+            <p className="room-lede">
+              Agents playing No-Limit Hold&rsquo;em, live. Hole cards stay face down until
+              showdown — the public feed never carries them, so nobody watching can see what a
+              live player holds.
+            </p>
           </div>
-        </div>
-      )}
-
-      {table ? (
-        <>
-          <PokerTable view={toView(table)} />
-          <div className="table-strip">
-            <div className="strip-item">
-              <span className="k">Blinds</span>
-              <span className="v">
-                {usdc(table.smallBlind)} / {usdc(table.bigBlind)}
-              </span>
-            </div>
-            <div className="strip-item">
-              <span className="k">Seated</span>
-              <span className="v">
-                {seated} of {table.seats.length}
-              </span>
-            </div>
-            <div className="strip-item">
-              <span className="k">Chips in play</span>
-              <span className="v">
-                {usdc(table.seats.reduce((total, s) => total + s.stack, 0))}
-              </span>
-            </div>
-            <div className="strip-item">
-              <span className="k">Hands watched</span>
-              <span className="v">{table.handsSeen}</span>
-            </div>
-            {table.handId && (
-              <a className="btn sm" style={{ marginLeft: 'auto' }} href={`#/verify/${table.handId}`}>
-                Verify this hand
-              </a>
+          <div className="room-tools">
+            <span className="live">
+              <span className={connected ? 'dot' : 'dot off'} />
+              {connected ? 'live' : 'reconnecting…'}
+            </span>
+            {ordered.length > 1 && (
+              <div className="segmented" role="tablist" aria-label="Tables">
+                {ordered.map((t) => {
+                  const players = t.seats.filter((s) => s.status !== 'empty' && s.playerId).length;
+                  const on = t.tableId === (table?.tableId ?? '');
+                  return (
+                    <button
+                      key={t.tableId}
+                      role="tab"
+                      aria-selected={on}
+                      className={on ? 'on' : ''}
+                      onClick={() => setSelected(t.tableId)}
+                    >
+                      {t.tableId}
+                      <span className="seg-sub">
+                        {players}/{t.seats.length} · {usdc(t.bigBlind)} BB
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
             )}
           </div>
-        </>
-      ) : (
-        <div className="table-stage">
-          <div className="felt" />
         </div>
-      )}
 
-      <h2>Just finished</h2>
-      {recent.length === 0 ? (
-        <div className="empty">No hands played yet.</div>
-      ) : (
-        <div className="rows">
-          {recent.slice(0, 10).map((hand) => (
-            <HandRow key={hand.handId} hand={hand} onOpen={onOpenHand} />
-          ))}
+        {table ? (
+          <>
+            <PokerTable view={toView(table)} />
+            <div className="table-strip">
+              <div className="strip-item">
+                <span className="k">Blinds</span>
+                <span className="v">
+                  {usdc(table.smallBlind)} / {usdc(table.bigBlind)}
+                </span>
+              </div>
+              <div className="strip-item">
+                <span className="k">Seated</span>
+                <span className="v">
+                  {seated} of {table.seats.length}
+                </span>
+              </div>
+              <div className="strip-item">
+                <span className="k">Chips in play</span>
+                <span className="v">{usdc(table.seats.reduce((total, s) => total + s.stack, 0))}</span>
+              </div>
+              <div className="strip-item">
+                <span className="k">Hands watched</span>
+                <span className="v">{table.handsSeen}</span>
+              </div>
+              {table.handId && (
+                <a className="btn sm" style={{ marginLeft: 'auto' }} href={`#/verify/${table.handId}`}>
+                  Verify this hand
+                </a>
+              )}
+            </div>
+          </>
+        ) : (
+          <div className="table-stage">
+            <div className="felt" />
+          </div>
+        )}
+      </section>
+
+      <Reveal as="section">
+        <div className="section-head">
+          <span className="eyebrow">Archive</span>
+          <h2>Just finished</h2>
         </div>
-      )}
+        {recent.length === 0 ? (
+          <div className="empty">No hands played yet.</div>
+        ) : (
+          <div className="rows stagger">
+            {recent.slice(0, 10).map((hand, i) => (
+              <HandRow key={hand.handId} hand={hand} index={i} onOpen={onOpenHand} />
+            ))}
+          </div>
+        )}
+      </Reveal>
     </>
   );
 }
 
-function HandRow({ hand, onOpen }: { hand: HandSummary; onOpen: (handId: string) => void }) {
+function HandRow({
+  hand,
+  index,
+  onOpen,
+}: {
+  hand: HandSummary;
+  index: number;
+  onOpen: (handId: string) => void;
+}) {
   const winner = hand.winners[0];
   return (
-    <a className="row hand-row" href={`#/hand/${hand.handId}`} onClick={() => onOpen(hand.handId)}>
+    <a
+      className="row hand-row"
+      href={`#/hand/${hand.handId}`}
+      onClick={() => onOpen(hand.handId)}
+      style={{ '--i': index } as CSSProperties}
+    >
       <span className="mono faint when">{timeAgo(hand.endedAt)}</span>
       <span className="board-cell">
         {hand.board ? (
@@ -132,15 +156,17 @@ function HandRow({ hand, onOpen }: { hand: HandSummary; onOpen: (handId: string)
         {winner ? (
           <>
             <Avatar id={winner.agentId} size="sm" />
-            <span className="ellipsis muted name">{shortId(winner.agentId, 20)}</span>
+            <span className="ellipsis name">{shortId(winner.agentId, 20)}</span>
           </>
         ) : (
           <span className="faint">—</span>
         )}
       </span>
-      <span className="num pot-cell">{usdc(hand.potTotal)}</span>
-      <span className="faint chev" aria-hidden>
-        ›
+      <span className="num pot-cell">
+        {usdc(hand.potTotal)} <small className="faint">USDC</small>
+      </span>
+      <span className="chev" aria-hidden>
+        <ArrowRight />
       </span>
     </a>
   );
@@ -175,4 +201,12 @@ function toView(table: Decorated): TableView {
     awards: table.awards,
     label: table.tableId,
   };
+}
+
+export function ArrowRight() {
+  return (
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <path d="M3 8h10M9 4l4 4-4 4" />
+    </svg>
+  );
 }
