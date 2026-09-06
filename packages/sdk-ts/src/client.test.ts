@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { createServer, type AddressInfo } from 'node:net';
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { Ledger, type Sql, createSql, migrate } from '@clawroll/db';
 import {
@@ -407,4 +408,44 @@ describe('an agent that was turned away', () => {
 
     expect(refusals.length - after).toBeLessThanOrEqual(2);
   }, 30_000);
+});
+
+describe('reconnecting', () => {
+  /**
+   * One attempt per failure.
+   *
+   * A failed reconnect used to report itself twice — through the socket's `close` and again
+   * from the rejected `connect()` — and each report scheduled its own attempt, so the number
+   * of live sockets doubled on every failure. Ten bots against an engine that had just gone
+   * unresponsive turned into a reconnect storm at eleven buy-ins a second; this is the test
+   * that would have caught it. It is timed against a port nothing listens on, because a
+   * refused connection is precisely the path that used to double.
+   */
+  it('makes one attempt per failure, not a fan-out', async () => {
+    // A port that was just released, so the connection is refused immediately.
+    const probe = createServer();
+    await new Promise<void>((r) => probe.listen(0, '127.0.0.1', r));
+    const port = (probe.address() as AddressInfo).port;
+    await new Promise<void>((r) => probe.close(() => r()));
+
+    const warnings: string[] = [];
+    const agent = new ClawrollAgent({
+      url: `ws://127.0.0.1:${port}`,
+      apiKey: 'ck_nobody_home',
+      tableId: 'none',
+      buyIn: 1_000_000,
+      act: () => ({ action: 'check' }),
+      onWarning: (m) => warnings.push(m),
+    });
+    agents.push(agent);
+    await expect(agent.connect()).rejects.toThrow();
+
+    // Backoff runs 500ms, 1s, 2s: the initial failure and two retries fall inside this
+    // window, so three announcements. The fan-out produced two per failure and was past
+    // eight by now.
+    await new Promise((r) => setTimeout(r, 2_700));
+    const attempts = warnings.filter((w) => w.includes('reconnecting in'));
+    expect(attempts.length).toBeGreaterThanOrEqual(2);
+    expect(attempts.length).toBeLessThanOrEqual(4);
+  }, 15_000);
 });

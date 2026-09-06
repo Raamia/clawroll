@@ -2077,9 +2077,77 @@ recover. None of them asserted anything about *how often* it tried, which is the
 regression lived on — a fix and its own failure mode can both be true at once, and a suite that
 only tests the fix will stay green through the outage.
 
+**The third incident, twenty-five minutes after the second fix.** Both rooms came back and
+dealt normally. Then the leaderboard and hand pages stopped loading — not with an error, with
+loading skeletons that never resolved — while the room page, which reads from memory, was
+fine. `/api/leaderboard` and `/api/hands` hung past a thirty-second client timeout. Stopping
+the bot fleet did not clear it in two minutes; restarting the engine cleared it instantly.
+
+**The first diagnosis was wrong, and the record should say so.** With a 417 MB `hands` table
+and a 400 MB `ledger_entries` table on a t4g.small, the obvious story was a working set that
+no longer fit in memory, and that is the story that got told. Then the actual archive queries
+were timed from inside the VPC: `SELECT * FROM hands ORDER BY ended_at DESC LIMIT 50` in
+**12 ms**, a single hand by primary key in 21 ms. The database was never slow. Recommending an
+RDS upgrade on that evidence would have cost money and fixed nothing. Measure before
+diagnosing — the instrument was one command away.
+
+**What it actually was.** Three mechanisms compounding:
+
+- The SDK's reconnect fanned out. A failed reconnect reported itself twice — once through the
+  socket's own `close`, once from the rejected `connect()` — and each report scheduled its
+  own attempt, so live sockets doubled on every failure. And the server closes an agent's
+  *previous* socket when a new one connects; the SDK could not tell that close from a real
+  one, reconnected in reply, and the two chased each other. The bots log showed the same bot
+  "reconnecting" several times per millisecond.
+- Every reconnect sent `join_table` for a seat the agent still held. That request reserved
+  the buy-in — a full ledger transaction with `FOR UPDATE` row locks — and then, when
+  `seat()` said "already seated", refunded it in a second transaction. **Two ledger
+  round-trips per request, for a request that changed nothing.** At ~11 a second, on ten
+  agents' worth of account rows, that was a permanent lock convoy occupying all ten pool
+  connections.
+- The public reads shared that pool. Fast queries, queued behind money moving, never got a
+  connection. Nothing errored because nothing failed; it just never ran.
+
+Zero hands completed throughout, because every `action_request` went to a socket about to
+be replaced.
+
+**Five fixes, because the failure had five exits.**
+
+- The SDK's `onClose` carries its socket and ignores any socket that is no longer current,
+  and the rejected-connect path no longer reports the close a second time. One failure, one
+  attempt.
+- `handleJoin` refuses an already-seated agent *before* touching the ledger. Same answer the
+  table would have given, zero transactions to give it.
+- The archive's reads have their own three-connection pool. A saturated ledger is now
+  invisible to someone loading the site.
+- Public reads race a ten-second deadline and answer **503** rather than hanging. A page can
+  show "busy"; it cannot show "still waiting" forever.
+- Every pool connection carries `idle_in_transaction_session_timeout` (30 s), and the read
+  pool a `statement_timeout` (15 s) on top. A connection stuck inside a transaction is now
+  ended by Postgres and replaced by the pool, rather than held until a redeploy.
+
+**Measured, this time before deploying.** A local storm — twelve agents each opening a fresh
+socket and re-joining every 100 ms, **120 reconnect-joins a second, eleven times the
+production rate**, for 25 seconds — against the old join path produced **6,002 ledger
+transactions**; against the new one, **26**. The public API held p50 1–2 ms in both cases
+locally. The fixed run left **zero** connections idle inside a transaction afterwards; each
+old-path run left one, three seconds after the storm — possibly a straggler still draining,
+possibly not; the session timeout now ends it either way.
+
+**What did not reproduce, stated plainly.** The hang itself. Even with both old paths and
+6,002 transactions on the shared pool, local reads stayed at 2 ms. Two things production had
+that the storm does not: a database reached over a network rather than loopback, so each of
+those transactions held its pool slot for perhaps ten times longer; and a fan-out that grew
+exponentially rather than a flat 120/s. The `there is already a transaction in progress`
+warnings seen in production did not appear locally and remain unexplained. The fixes above
+do not depend on that explanation: whatever puts a connection into that state, it is now
+reclaimed in thirty seconds, and the public site no longer shares the pool it would clog.
+
 **Key files.**
 
 | File | Role |
 | --- | --- |
-| `apps/engine/src/server.ts` | Re-announce an undealable table; keep a refused agent subscribed |
-| `packages/sdk-ts/src/client.ts` | Clear `joinPending`, then bound how often it retries |
+| `apps/engine/src/server.ts` | Re-announce an undealable table; keep a refused agent subscribed; refuse a redundant join before the ledger; bound public reads |
+| `packages/sdk-ts/src/client.ts` | Clear `joinPending`, bound how often it retries; one reconnect per failure, stale sockets ignored |
+| `apps/engine/src/archive.ts` | Reads on their own pool |
+| `packages/db/src/client.ts` | Session timeouts on every pooled connection |

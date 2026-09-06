@@ -3,6 +3,7 @@ import WebSocket from 'ws';
 import type { ServerMessage } from '@clawroll/protocol';
 import { InMemoryAgentDirectory, hashSecret, issueKey, parseKey } from './auth.js';
 import { ClawrollServer, DEFAULT_SERVER_CONFIG, type ServerConfig } from './server.js';
+import type { HandArchive } from './archive.js';
 import type { TableConfig } from './table.js';
 
 const TABLE: TableConfig = {
@@ -268,6 +269,22 @@ describe('the server over real sockets', () => {
     await new Promise((r) => setTimeout(r, 50));
 
     expect(refused.of('table_state').length).toBeGreaterThan(before);
+  });
+
+  it('answers 503 rather than hanging when the archive is slow', async () => {
+    // What a spectator saw in production: loading skeletons, indefinitely, with no error
+    // anywhere — the read was queued behind a saturated pool and never came back. A prompt
+    // "busy" is something a page can show and a client can retry; a request that never
+    // completes is neither.
+    await server.stop();
+    const stuck = { recent: () => new Promise<never>(() => {}) } as unknown as HandArchive;
+    server = new ClawrollServer(config({ httpQueryTimeoutMs: 100 }), directory, null, stuck);
+    port = await server.start();
+
+    const started = Date.now();
+    const response = await fetch(`http://127.0.0.1:${port}/api/hands`);
+    expect(response.status).toBe(503);
+    expect(Date.now() - started).toBeLessThan(2_000);
   });
 
   it('seats an agent that asks to join', async () => {

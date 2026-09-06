@@ -74,7 +74,18 @@ function toSummary(row: Record<string, unknown>): HandSummary {
 }
 
 export class HandArchive {
-  constructor(private readonly sql: Sql) {}
+  /**
+   * `reads` serves the public API; `sql` records hands.
+   *
+   * Two pools rather than one, because the public reads used to share the engine's pool
+   * with settlements and buy-ins — and when those filled it, every spectator page hung.
+   * The queries themselves were fast; they were queued behind money moving. Give the reads
+   * their own small pool and a saturated ledger is invisible to someone loading the site.
+   */
+  constructor(
+    private readonly sql: Sql,
+    private readonly reads: Sql = sql,
+  ) {}
 
   /** Publish a finished hand. Idempotent: re-publishing the same id changes nothing. */
   async record(hand: HandRecord): Promise<void> {
@@ -96,7 +107,7 @@ export class HandArchive {
 
   /** The full published record, or `null` if there is no such hand. */
   async get(handId: string): Promise<HandRecord | null> {
-    const rows = await this.sql<Record<string, unknown>[]>`
+    const rows = await this.reads<Record<string, unknown>[]>`
       SELECT id, table_id, button_seat, small_blind::text, big_blind::text, commitment,
              server_seed, client_seeds, board, seats, actions, pots, awards
       FROM hands WHERE id = ${handId}`;
@@ -148,10 +159,10 @@ export class HandArchive {
   /** Recent hands, newest first. */
   async recent(limit = 50, tableId?: string): Promise<HandSummary[]> {
     const rows = tableId
-      ? await this.sql<Record<string, unknown>[]>`
+      ? await this.reads<Record<string, unknown>[]>`
           SELECT id, table_id, board, seats, awards, ended_at FROM hands
           WHERE table_id = ${tableId} ORDER BY ended_at DESC LIMIT ${limit}`
-      : await this.sql<Record<string, unknown>[]>`
+      : await this.reads<Record<string, unknown>[]>`
           SELECT id, table_id, board, seats, awards, ended_at FROM hands
           ORDER BY ended_at DESC LIMIT ${limit}`;
 
@@ -167,14 +178,14 @@ export class HandArchive {
    * publishing on a site whose whole claim is verifiability.
    */
   async leaderboard(limit = 25, tableId?: string): Promise<LeaderboardRow[]> {
-    const rows = await this.sql<
+    const rows = await this.reads<
       { agent_id: string; display_name: string | null; hands_played: string; net: string }[]
     >`
       WITH per_seat AS (
         SELECT seat_row->>'agentId' AS agent_id,
                (seat_row->>'finalStack')::bigint - (seat_row->>'startingStack')::bigint AS net
         FROM hands, jsonb_array_elements(seats) AS seat_row
-        ${tableId ? this.sql`WHERE hands.table_id = ${tableId}` : this.sql``}
+        ${tableId ? this.reads`WHERE hands.table_id = ${tableId}` : this.reads``}
       )
       SELECT p.agent_id,
              a.display_name,
@@ -204,9 +215,9 @@ export class HandArchive {
    * played. The containment operator does the work; there is no reason for a second pass.
    */
   async handsForAgent(agentId: string, limit = 50): Promise<HandSummary[]> {
-    const rows = await this.sql<Record<string, unknown>[]>`
+    const rows = await this.reads<Record<string, unknown>[]>`
       SELECT id, table_id, board, seats, awards, ended_at FROM hands
-      WHERE seats @> ${this.sql.json([{ agentId }] as unknown as never)}
+      WHERE seats @> ${this.reads.json([{ agentId }] as unknown as never)}
       ORDER BY ended_at DESC LIMIT ${limit}`;
 
     return rows.map((row) => toSummary(row));
@@ -226,10 +237,10 @@ export class HandArchive {
    */
   async agentProfile(agentId: string, limit = 50): Promise<AgentProfile | null> {
     const [totals, named, hands] = await Promise.all([
-      this.sql<{ hands_played: string; net: string; biggest_pot: string }[]>`
+      this.reads<{ hands_played: string; net: string; biggest_pot: string }[]>`
         WITH mine AS (
           SELECT seats, awards FROM hands
-          WHERE seats @> ${this.sql.json([{ agentId }] as unknown as never)}
+          WHERE seats @> ${this.reads.json([{ agentId }] as unknown as never)}
         )
         SELECT count(*)::text AS hands_played,
                coalesce(sum(
@@ -240,7 +251,7 @@ export class HandArchive {
                  (SELECT sum((a->>'amount')::bigint) FROM jsonb_array_elements(awards) a)
                ), 0)::text AS biggest_pot
         FROM mine`,
-      this.sql<{ display_name: string | null }[]>`
+      this.reads<{ display_name: string | null }[]>`
         SELECT display_name FROM agents WHERE id = ${agentId}`,
       this.handsForAgent(agentId, limit),
     ]);
@@ -261,7 +272,7 @@ export class HandArchive {
   }
 
   async count(): Promise<number> {
-    const rows = await this.sql<{ c: number }[]>`SELECT count(*)::int AS c FROM hands`;
+    const rows = await this.reads<{ c: number }[]>`SELECT count(*)::int AS c FROM hands`;
     return rows[0]?.c ?? 0;
   }
 }

@@ -1152,6 +1152,33 @@ green after one fix would have hidden the other two until the next outage.
   said anything about how often it tried, so the suite stayed green through the thing that took
   the site down.
 
+- **The reconnect fans out.** `client.test.ts › reconnecting › makes one attempt per failure,
+  not a fan-out` points an agent at a port that was just released, so every connection is
+  refused instantly, and counts reconnect announcements over 2.7 s. Backoff of 500 ms, 1 s,
+  2 s gives three; the fan-out version gave two per failure and was past eight. Restoring the
+  double report fails it.
+- **A redundant join moves money.** `wired.test.ts › a join from an agent that is already
+  seated › is refused before any money moves` seats an agent over a real socket, sends the
+  same `join_table` again, and asserts the count of ledger transactions touching that agent's
+  accounts is unchanged after the refusal. Without the short-circuit it rises by two.
+- **A public read hangs.** `server.test.ts › answers 503 rather than hanging when the archive
+  is slow` gives the server an archive whose `recent()` never resolves and expects a 503
+  inside two seconds. With the deadline removed the test itself hangs — which is the
+  production symptom, reproduced in the one place it is cheap.
+- **A connection is left inside a transaction.** `session.test.ts › ends a session left idle
+  inside a transaction, and the pool recovers` opens a one-connection pool with a 200 ms
+  idle-in-transaction limit, sleeps 700 ms inside `begin`, and asserts both that the
+  transaction fails *and* that the next query succeeds — the second half is the point, since
+  it can only pass if the terminated connection was replaced. `› bounds a statement when
+  asked to, and leaves it unbounded otherwise` pins that the statement timeout is opt-in,
+  because the pool that runs migrations must be allowed to build an index.
+
+**The storm itself is a script, not a test.** `storm.ts` (kept out of the suite) runs twelve
+agents reconnecting and re-joining 120 times a second for 25 seconds against a local server
+and reports ledger transactions produced, API latency during, and pool state after. It needs
+the machine to itself and twenty-five seconds; the numbers it produced are in `features.md`.
+It is the check that should have run before the second deploy rather than after the third.
+
 No test covers the whole outage end to end, and none can: it needs a table to run itself down
 to one player over days of real play. The four above cover each mechanism that made the outage
 irreversible, which is the part that turns a quiet table into a dead one.
@@ -1284,3 +1311,8 @@ against live data, because an invariant worth testing is worth monitoring.
 | I118 | A refused agent stays subscribed to the table it asked for | `server.test.ts › keeps a refused agent subscribed so it can try again` | F30 |
 | I119 | A refused agent takes a seat that later frees up, unprompted | `client.test.ts › takes the seat once one frees up` | F30 |
 | I120 | A refused agent bounds its retry rate, and resets that bound once seated | `client.test.ts › backs off instead of retrying on every table update` | F30 |
+| I121 | A failed reconnect schedules exactly one further attempt, and a stale socket's close schedules none | `client.test.ts › makes one attempt per failure, not a fan-out` | F30 |
+| I122 | A join from an already-seated agent produces no ledger transaction | `wired.test.ts › is refused before any money moves` | F30 |
+| I123 | A public read answers within `httpQueryTimeoutMs`, with 503 if the archive has not | `server.test.ts › answers 503 rather than hanging when the archive is slow` | F30 |
+| I124 | A session idle inside a transaction is ended by Postgres and its pool slot replaced | `session.test.ts › ends a session left idle inside a transaction, and the pool recovers` | F30 |
+| I125 | The statement timeout applies only where asked for; the migration pool is never bounded | `session.test.ts › bounds a statement when asked to, and leaves it unbounded otherwise` | F30 |

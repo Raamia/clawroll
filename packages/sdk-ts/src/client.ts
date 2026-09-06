@@ -46,17 +46,7 @@ export class ClawrollAgent {
   }
 
   async connect(): Promise<void> {
-    const socket = new WebSocket(`${this.options.url}/agent?key=${this.options.apiKey}`);
-    this.socket = socket;
-
-    // Subscribe BEFORE awaiting `open`. The server sends `welcome` the instant it accepts
-    // the connection, and `welcome` is what triggers `join_table` — subscribing afterwards
-    // leaves a window where that frame arrives with nobody listening, and the agent then
-    // sits connected and silent forever. It looks exactly like a server bug and is not.
-    socket.on('message', (data) => void this.onMessage(data.toString()));
-    socket.on('close', () => this.onClose());
-    socket.on('error', (error) => this.warn(`socket error: ${error.message}`));
-
+    const socket = this.dial();
     await new Promise<void>((resolve, reject) => {
       socket.once('open', () => {
         this.reconnectAttempts = 0;
@@ -66,6 +56,23 @@ export class ClawrollAgent {
     });
   }
 
+  /** Open a socket and wire it up. Every connection, first or re-, comes through here. */
+  private dial(): WebSocket {
+    const socket = new WebSocket(`${this.options.url}/agent?key=${this.options.apiKey}`);
+    this.socket = socket;
+
+    // Subscribe BEFORE awaiting `open`. The server sends `welcome` the instant it accepts
+    // the connection, and `welcome` is what triggers `join_table` — subscribing afterwards
+    // leaves a window where that frame arrives with nobody listening, and the agent then
+    // sits connected and silent forever. It looks exactly like a server bug and is not.
+    socket.on('message', (data) => void this.onMessage(data.toString()));
+    // The close carries its own socket so `onClose` can tell whether it is still the one in
+    // use. A stale socket's close must be ignored — see there for what happens otherwise.
+    socket.on('close', () => this.onClose(socket));
+    socket.on('error', (error) => this.warn(`socket error: ${error.message}`));
+    return socket;
+  }
+
   /** Leave the table and stop reconnecting. */
   close(): void {
     this.closing = true;
@@ -73,9 +80,22 @@ export class ClawrollAgent {
     this.socket?.close();
   }
 
-  private onClose(): void {
+  private onClose(socket: WebSocket): void {
+    // Only the socket currently in use gets a say in what happens next.
+    //
+    // Two things used to get through here that should not have. A failed reconnect reported
+    // itself twice — once through the socket's own `close` and once from the rejected
+    // `connect()` — and each report scheduled its own attempt, so one failure became two
+    // sockets, then four. And the server closes an agent's *previous* socket the moment a
+    // newer one connects; with no way to tell that close from a live one, the agent
+    // reconnected in reply, the server closed the other, and the two chased each other
+    // indefinitely — every lap a fresh buy-in against the ledger. Ten bots doing that put
+    // the engine at eleven ledger round-trips a second with no hand completing.
+    if (socket !== this.socket) return;
+    this.socket = null;
     this.seated = false;
     this.joinPending = false;
+    this.clearRejoinTimer();
     if (this.closing || this.options.reconnect === false) return;
 
     // Exponential backoff, capped. A tight reconnect loop against a server that is down is
@@ -83,10 +103,15 @@ export class ClawrollAgent {
     const delay = Math.min(30_000, 500 * 2 ** this.reconnectAttempts++);
     this.warn(`disconnected, reconnecting in ${delay}ms`);
     setTimeout(() => {
-      void this.connect().catch((error: unknown) => {
-        this.warn(`reconnect failed: ${(error as Error).message}`);
-        this.onClose();
-      });
+      if (this.closing) return;
+      // A failed attempt lands back here through its own `close`, exactly once. Nothing
+      // else may schedule the next try.
+      try {
+        this.dial();
+      } catch (error) {
+        // Only a malformed URL throws synchronously, and that will never succeed.
+        this.warn(`giving up: ${(error as Error).message}`);
+      }
     }, delay).unref();
   }
 

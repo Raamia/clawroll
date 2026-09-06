@@ -60,6 +60,15 @@ export interface ServerConfig {
    * for the same reason.
    */
   readonly handIntervalMs: number;
+  /**
+   * How long a public read may wait on the archive before the request is answered 503.
+   *
+   * The alternative is what happened in production: reads queued behind a saturated
+   * connection pool and simply never returned, so the leaderboard page showed loading
+   * skeletons indefinitely with no error anywhere. A fast "busy" is something a client
+   * can act on; a request that never completes is not.
+   */
+  readonly httpQueryTimeoutMs: number;
 }
 
 export const DEFAULT_SERVER_CONFIG: Omit<ServerConfig, 'port' | 'tables'> = {
@@ -76,6 +85,7 @@ export const DEFAULT_SERVER_CONFIG: Omit<ServerConfig, 'port' | 'tables'> = {
   tickIntervalMs: 250,
   autoStartHands: true,
   handIntervalMs: 2_000,
+  httpQueryTimeoutMs: 10_000,
 };
 
 interface Connection {
@@ -83,6 +93,12 @@ interface Connection {
   readonly agent: AgentRecord | null;
   tokens: number;
   lastRefill: number;
+}
+
+class ArchiveTimeout extends Error {
+  constructor(afterMs: number) {
+    super(`archive read exceeded ${afterMs}ms`);
+  }
 }
 
 export class ClawrollServer {
@@ -231,25 +247,25 @@ export class ClawrollServer {
       }
 
       if (path === '/api/hands') {
-        json(200, { hands: await this.archive.recent(50) });
+        json(200, { hands: await this.bounded(this.archive.recent(50)) });
         return;
       }
 
       if (path === '/api/leaderboard') {
-        json(200, { leaderboard: await this.archive.leaderboard() });
+        json(200, { leaderboard: await this.bounded(this.archive.leaderboard()) });
         return;
       }
 
       const proofMatch = /^\/api\/hands\/([^/]+)\/proof$/.exec(path);
       if (proofMatch) {
-        const proof = await this.archive.proofFor(decodeURIComponent(proofMatch[1]!));
+        const proof = await this.bounded(this.archive.proofFor(decodeURIComponent(proofMatch[1]!)));
         proof ? json(200, proof) : json(404, { error: 'no such hand' });
         return;
       }
 
       const handMatch = /^\/api\/hands\/([^/]+)$/.exec(path);
       if (handMatch) {
-        const hand = await this.archive.get(decodeURIComponent(handMatch[1]!));
+        const hand = await this.bounded(this.archive.get(decodeURIComponent(handMatch[1]!)));
         hand ? json(200, hand) : json(404, { error: 'no such hand' });
         return;
       }
@@ -259,15 +275,31 @@ export class ClawrollServer {
         // 404 rather than an empty profile for an id nobody has ever used. An empty
         // profile reads as "this agent has played nothing", which is a different and
         // wrong claim about an agent that does not exist.
-        const profile = await this.archive.agentProfile(decodeURIComponent(agentMatch[1]!));
+        const profile = await this.bounded(this.archive.agentProfile(decodeURIComponent(agentMatch[1]!)));
         profile ? json(200, profile) : json(404, { error: 'no such agent' });
         return;
       }
 
       json(404, { error: 'not found' });
     } catch (error) {
+      if (error instanceof ArchiveTimeout) {
+        json(503, { error: 'archive busy, try again' });
+        return;
+      }
       json(500, { error: (error as Error).message });
     }
+  }
+
+  /** Race an archive read against `httpQueryTimeoutMs`. The read itself is not cancelled. */
+  private bounded<T>(read: Promise<T>): Promise<T> {
+    let timer: NodeJS.Timeout | undefined;
+    const deadline = new Promise<never>((_, reject) => {
+      timer = setTimeout(
+        () => reject(new ArchiveTimeout(this.config.httpQueryTimeoutMs)),
+        this.config.httpQueryTimeoutMs,
+      );
+    });
+    return Promise.race([read, deadline]).finally(() => clearTimeout(timer));
   }
 
   async start(): Promise<number> {
@@ -530,6 +562,17 @@ export class ClawrollServer {
         code: 'unknown_table',
         message: `no table "${tableId}" here; this room serves ${[...this.tables.keys()].join(', ')}`,
       });
+      return;
+    }
+
+    // Already seated means there is nothing to do — and, specifically, nothing to do to the
+    // ledger. `seat()` makes this same check, but by then the buy-in has been reserved, and
+    // refunding it is a second transaction: two rounds of row locks on this agent's accounts
+    // for a request that changes nothing. A reconnecting agent sends exactly this request,
+    // and during a reconnect storm it arrived eleven times a second — enough to fill the
+    // connection pool with pointless work and hang every public read queued behind it.
+    if (table.seatOf(agentId) !== null) {
+      this.write(socket, { type: 'error', code: 'not_seated', message: 'already seated at this table' });
       return;
     }
 

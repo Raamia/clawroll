@@ -364,3 +364,44 @@ describe('startup reconciliation', () => {
     expect(await ledger.balanceOfAgent(agentId, 'available')).toBe(10_000_000);
   });
 });
+
+describe('a join from an agent that is already seated', () => {
+  /** Distinct ledger transactions that touched any of this agent's accounts. */
+  const transactionsTouching = async (agentId: string): Promise<number> => {
+    const rows = await sql<{ n: string }[]>`
+      SELECT count(DISTINCT e.tx_id)::text AS n
+      FROM ledger_entries e JOIN accounts a ON a.id = e.account_id
+      WHERE a.agent_id = ${agentId}`;
+    return Number(rows[0]?.n ?? 0);
+  };
+
+  it('is refused before any money moves', async () => {
+    // A reconnecting agent sends `join_table` on every fresh socket, and it is usually still
+    // seated from the last one. That request used to reserve the buy-in — a full ledger
+    // transaction with row locks — and then refund it when `seat()` said no: two round-trips
+    // against the ledger for a request that changed nothing. Eleven a second of those during
+    // a reconnect storm filled the pool and hung every public read queued behind it.
+    const { directory, port } = await startServer();
+    const agentId = await fundedAgent(10_000_000);
+    const { apiKey } = directory.register(agentId, 'Bot');
+
+    const client = await Client.connect(port, `/agent?key=${apiKey}`);
+    clients.push(client);
+    client.send({ type: 'join_table', tableId: TABLE.tableId, buyIn: 4_000_000 });
+    await waitUntil(
+      async () => (await ledger.balanceOfAgent(agentId, 'in_play')) === 4_000_000,
+      'the first buy-in to land',
+    );
+
+    const before = await transactionsTouching(agentId);
+    client.send({ type: 'join_table', tableId: TABLE.tableId, buyIn: 4_000_000 });
+    await waitUntil(
+      async () => client.of('error').some((e) => e.code === 'not_seated'),
+      'the redundant join to be refused',
+    );
+    await quiesce();
+
+    expect(await transactionsTouching(agentId)).toBe(before);
+    expect(await ledger.balanceOfAgent(agentId, 'in_play')).toBe(4_000_000);
+  });
+});

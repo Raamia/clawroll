@@ -30,6 +30,11 @@ function number(name: string, fallback: number): number {
 async function main(): Promise<void> {
   // Fails loudly in production if unset — see `databaseUrl()`.
   const sql = createSql();
+  // The public read API gets its own small pool. It shares the database, not the queue: a
+  // burst of buy-ins that saturates the engine's pool must not take the spectator site down
+  // with it, which is exactly what it did. Bounded statements too — nothing on this pool is
+  // allowed to run long, while the main pool must still be able to build an index.
+  const reads = createSql(undefined, { max: 3, statementTimeoutMs: 15_000 });
 
   // Migrations run at boot. With a single engine task this is safe and removes a deploy
   // step; a second task would need this moved to a one-off job, because two containers
@@ -95,7 +100,7 @@ async function main(): Promise<void> {
     },
     directory,
     new BankrollService(sql, ledger),
-    new HandArchive(sql),
+    new HandArchive(sql, reads),
   );
 
   const port = await server.start();

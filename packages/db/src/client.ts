@@ -77,11 +77,42 @@ export function sslFor(url: string): 'require' | false {
   }
 }
 
-export function createSql(url = databaseUrl(), options: { max?: number } = {}): Sql {
+export interface SqlOptions {
+  /** Pool size. */
+  readonly max?: number;
+  /**
+   * Kill a session left idle inside an open transaction, in milliseconds. Default 30s.
+   *
+   * A connection in that state is a leak: it holds its row locks and its pool slot and
+   * will do so until the process restarts. Nothing here legitimately pauses inside a
+   * transaction — the callbacks await only their own queries — so a session found idle
+   * there for this long is stuck, and the honest thing is for Postgres to end it. The
+   * pool then opens a fresh connection and the process heals itself, which a wedged one
+   * never did: in production every public read hung until a redeploy.
+   */
+  readonly idleInTransactionTimeoutMs?: number;
+  /**
+   * Bound any single statement, in milliseconds. Off unless asked for.
+   *
+   * Not a default, because migrations run through the same function and building an index
+   * on a table with two hundred thousand rows must be allowed to take as long as it takes.
+   * The public read pool asks for it; the pool that runs DDL does not.
+   */
+  readonly statementTimeoutMs?: number;
+}
+
+export function createSql(url = databaseUrl(), options: SqlOptions = {}): Sql {
   return postgres(url, {
     max: options.max ?? 10,
     // Money code should never see a silently coerced value.
     transform: { undefined: null },
+    // Session settings, sent in the startup packet so every pooled connection has them.
+    connection: {
+      idle_in_transaction_session_timeout: options.idleInTransactionTimeoutMs ?? 30_000,
+      ...(options.statementTimeoutMs !== undefined
+        ? { statement_timeout: options.statementTimeoutMs }
+        : {}),
+    },
     // `require` encrypts without verifying the server certificate against a CA bundle.
     // Verification would mean shipping and rotating the RDS root certificate in the image;
     // the connection never leaves an isolated subnet reachable only from the task security
