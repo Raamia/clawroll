@@ -22,6 +22,19 @@ export class ClawrollAgent {
   private seated = false;
   private joinPending = false;
   private rebuysLeft: number;
+  /**
+   * When the next join may be attempted, and how long to wait after the one after that.
+   *
+   * A refused join has to be retried — otherwise an agent that is briefly short of a buy-in
+   * is stranded for good — but retrying on every `table_state` is a flood, because an active
+   * table emits one on every state change. Nine agents doing that against a 120 msg/s budget
+   * put the engine into overlapping ledger transactions until it was killed for memory. The
+   * backoff resets the moment the agent is actually seated, so a normal re-buy after busting
+   * is still immediate; only repeated refusals slow down.
+   */
+  private rejoinBackoffMs = 0;
+  private nextRejoinAt = 0;
+  private rejoinTimer: ReturnType<typeof setTimeout> | null = null;
   private stackAtHandStart = 0;
   private closing = false;
   private reconnectAttempts = 0;
@@ -56,6 +69,7 @@ export class ClawrollAgent {
   /** Leave the table and stop reconnecting. */
   close(): void {
     this.closing = true;
+    this.clearRejoinTimer();
     this.socket?.close();
   }
 
@@ -103,7 +117,11 @@ export class ClawrollAgent {
         if (this.seated) {
           this.joinPending = false;
           this.stackAtHandStart = mine!.stack;
-        } else if (!this.joinPending && this.rebuysLeft > 0) {
+          // Being seated is the only proof the refusals have stopped.
+          this.clearRejoinTimer();
+          this.rejoinBackoffMs = 0;
+          this.nextRejoinAt = 0;
+        } else if (!this.joinPending && this.rebuysLeft > 0 && Date.now() >= this.nextRejoinAt) {
           // Busting removes the seat. Without this the agent silently stops playing.
           this.rebuysLeft--;
           this.buyIn();
@@ -164,7 +182,12 @@ export class ClawrollAgent {
         // idle forever, ignoring every later `table_state` because the flag says a join is
         // still in flight. Clearing it while unseated lets the next one retry, which is what
         // makes an agent recoverable after the balance that caused the refusal is topped up.
-        if (!this.seated) this.joinPending = false;
+        if (!this.seated) {
+          this.joinPending = false;
+          this.rejoinBackoffMs = Math.min(Math.max(this.rejoinBackoffMs * 2, 1_000), 60_000);
+          this.nextRejoinAt = Date.now() + this.rejoinBackoffMs;
+          this.scheduleRejoin(this.rejoinBackoffMs);
+        }
         break;
 
       default:
@@ -245,6 +268,32 @@ export class ClawrollAgent {
     }
 
     return { action: decision.action };
+  }
+
+  /**
+   * Try again once the backoff expires, without waiting to be asked.
+   *
+   * Retrying only when a `table_state` happens to arrive makes recovery depend on the table
+   * still being busy — and a table that refused an agent may be about to go quiet, which is
+   * precisely when nothing further will arrive. The agent would then hold a backoff that
+   * never elapses against a trigger that never fires. Owning the timer keeps recovery a
+   * property of the agent rather than of the room's traffic.
+   */
+  private scheduleRejoin(delayMs: number): void {
+    this.clearRejoinTimer();
+    this.rejoinTimer = setTimeout(() => {
+      this.rejoinTimer = null;
+      if (this.closing || this.seated || this.joinPending || this.rebuysLeft <= 0) return;
+      this.rebuysLeft--;
+      this.buyIn();
+    }, delayMs);
+    // Never hold a short-lived script open just because a retry is pending.
+    this.rejoinTimer.unref?.();
+  }
+
+  private clearRejoinTimer(): void {
+    if (this.rejoinTimer !== null) clearTimeout(this.rejoinTimer);
+    this.rejoinTimer = null;
   }
 
   private buyIn(): void {

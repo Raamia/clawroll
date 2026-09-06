@@ -340,4 +340,71 @@ describe('an agent that was turned away', () => {
     );
     expect(seated()).toBe(1);
   }, 30_000);
+
+  /**
+   * The regression that took the site down.
+   *
+   * Making a refused agent retry is correct; making it retry on *every* `table_state` is a
+   * flood, because an active table emits one on every state change and the server's budget is
+   * 120 messages a second per connection. Nine agents short of a buy-in put the engine into
+   * overlapping ledger transactions until ECS killed it for memory — an outage caused by the
+   * fix for the previous outage. What matters is not that it retries but that it backs off.
+   */
+  it('backs off instead of retrying on every table update', async () => {
+    const oneSeat: TableConfig = { ...TABLE, tableId: `flood_${randomUUID().slice(0, 8)}`, maxSeats: 1 };
+    const directory = new InMemoryAgentDirectory();
+    const server = new ClawrollServer(
+      {
+        ...DEFAULT_SERVER_CONFIG,
+        port: 0,
+        tables: [oneSeat],
+        // A one-seat table can never reach two players, so every tick re-announces it —
+        // which is exactly the stream of `table_state` the agent used to answer one-for-one.
+        autoStartHands: true,
+        handIntervalMs: 0,
+        tickIntervalMs: 10,
+      },
+      directory,
+      bankroll,
+    );
+    servers.push(server);
+    const port = await server.start();
+
+    const sitterKey = await fundedKey(directory, 'flood-sitter');
+    const sitter = new ClawrollAgent({
+      url: `ws://127.0.0.1:${port}`,
+      apiKey: sitterKey,
+      tableId: oneSeat.tableId,
+      buyIn: 5_000_000,
+      rebuys: 50,
+      act: () => ({ action: 'check' }),
+      onWarning: () => {},
+    });
+    agents.push(sitter);
+    await sitter.connect();
+    const sitterId = directory.authenticate(sitterKey)!.agentId;
+    await waitUntil(() => server.table.seatOf(sitterId) !== null, 'the sitter to sit');
+
+    const refusals: string[] = [];
+    const turnedAway = new ClawrollAgent({
+      url: `ws://127.0.0.1:${port}`,
+      apiKey: await fundedKey(directory, 'flood-refused'),
+      tableId: oneSeat.tableId,
+      buyIn: 5_000_000,
+      rebuys: 5_000,
+      act: () => ({ action: 'check' }),
+      onWarning: (m) => refusals.push(m),
+    });
+    agents.push(turnedAway);
+    await turnedAway.connect();
+    await waitUntil(() => refusals.length > 0, 'the first refusal');
+
+    // Roughly 60 announcements arrive over this window at a 10ms tick. Before the backoff
+    // the agent answered every one with its own join attempt, each carrying a ledger
+    // transaction; with it, the second retry is a second away and the third two.
+    const after = refusals.length;
+    await new Promise((r) => setTimeout(r, 600));
+
+    expect(refusals.length - after).toBeLessThanOrEqual(2);
+  }, 30_000);
 });

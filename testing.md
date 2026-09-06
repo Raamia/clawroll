@@ -1143,6 +1143,15 @@ green after one fix would have hidden the other two until the next outage.
   With the `joinPending` fix reverted this fails by timeout after 15 seconds rather than by
   assertion — the agent simply never acts, which is exactly how it presented in production.
 
+- **The retry floods.** `client.test.ts › backs off instead of retrying on every table update`
+  is the regression test for the outage the first three tests' fix *caused*. It stands a
+  one-seat table on a 10ms tick so the engine re-announces continuously, gets an agent refused,
+  and asserts it answers at most two of the roughly sixty announcements that follow. Reverting
+  the backoff while keeping the retry — the exact code that ran in production — fails it. The
+  lesson is in the shape of the gap: three tests all proved an agent *could* recover and not one
+  said anything about how often it tried, so the suite stayed green through the thing that took
+  the site down.
+
 No test covers the whole outage end to end, and none can: it needs a table to run itself down
 to one player over days of real play. The four above cover each mechanism that made the outage
 irreversible, which is the part that turns a quiet table into a dead one.
@@ -1274,3 +1283,4 @@ against live data, because an invariant worth testing is worth monitoring.
 | I117 | A quiet table announces on the deal interval, never on the tick interval | `server.test.ts › does not announce while it is still within the deal interval` | F30 |
 | I118 | A refused agent stays subscribed to the table it asked for | `server.test.ts › keeps a refused agent subscribed so it can try again` | F30 |
 | I119 | A refused agent takes a seat that later frees up, unprompted | `client.test.ts › takes the seat once one frees up` | F30 |
+| I120 | A refused agent bounds its retry rate, and resets that bound once seated | `client.test.ts › backs off instead of retrying on every table update` | F30 |

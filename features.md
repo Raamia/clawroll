@@ -2056,9 +2056,30 @@ message that never arrived.
 also buys in on `welcome`, independent of table state. That is worth knowing as a lever, but it
 is a restart papering over a deadlock, not a fix.
 
+**The first fix caused a worse outage than the one it fixed.** Clearing `joinPending` made a
+refused agent retry — on *every* `table_state*`, and an active table emits one on every state
+change. Nine agents sitting below the 2 USDC buy-in, against a 120 message/second budget each,
+put the engine into overlapping ledger transactions (`there is already a transaction in
+progress`, repeatedly) until ECS killed it: `OutOfMemoryError`, exit 137, twenty-one minutes
+after the deploy. Every API path returned 504 while the static page kept serving happily from
+S3, which is a good illustration of why a green front page proves nothing.
+
+**So the retry is rate-limited, and owns its own clock.** A refusal doubles a backoff from one
+second to a cap of sixty; being seated resets it, so a normal re-buy after busting is still
+immediate and only repeated refusals slow down. The retry is also scheduled rather than waiting
+for the next broadcast: a table that refuses an agent may be about to go quiet, and that is
+exactly when no further `table_state` will arrive to act as the trigger — the agent would hold a
+backoff that never elapses against an event that never fires. Recovery has to be a property of
+the agent, not of how busy the room happens to be.
+
+**What should have caught it.** The three original tests each proved a stranded agent could
+recover. None of them asserted anything about *how often* it tried, which is the axis the
+regression lived on — a fix and its own failure mode can both be true at once, and a suite that
+only tests the fix will stay green through the outage.
+
 **Key files.**
 
 | File | Role |
 | --- | --- |
 | `apps/engine/src/server.ts` | Re-announce an undealable table; keep a refused agent subscribed |
-| `packages/sdk-ts/src/client.ts` | Clear `joinPending` when a join is refused |
+| `packages/sdk-ts/src/client.ts` | Clear `joinPending`, then bound how often it retries |
