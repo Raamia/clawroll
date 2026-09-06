@@ -1809,6 +1809,15 @@ Everything that can fail is checked before the prompt appears.
 master seed, and funding the treasury from the faucets. Neither should be automated — the seed
 must be generated somewhere it can actually be kept, and the faucets are interactive.
 
+**The invalidation step silently stopped working when the site got a domain.** The distribution
+was looked up by `DomainName`, which is always the `*.cloudfront.net` one CloudFront assigns —
+never a custom alias. That matched for as long as the site *was* its CloudFront name, and
+stopped the moment `clawroll.xyz` was put in front of it. Every deploy since printed `could not
+find the distribution for clawroll.xyz — skipping invalidation` and carried on to report
+success, so the failure read as a missing distribution rather than as a cache nobody was
+clearing. It went unnoticed because the deploys in between changed no front-end files. The
+lookup now matches the aliases too.
+
 **Key files.**
 
 | File | Role |

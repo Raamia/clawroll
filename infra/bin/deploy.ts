@@ -168,7 +168,13 @@ async function invalidate(siteUrl: string): Promise<void> {
   const domain = siteUrl.replace(/^https?:\/\//, '').replace(/\/$/, '');
   const cloudfront = new CloudFrontClient({ region: REGION });
   const listed = await cloudfront.send(new ListDistributionsCommand({}));
-  const distribution = listed.DistributionList?.Items?.find((d) => d.DomainName === domain);
+  // Match the aliases as well as the distribution's own name. `DomainName` is always the
+  // `*.cloudfront.net` one, so the moment the site moved to `clawroll.xyz` this lookup stopped
+  // matching and every deploy since has skipped invalidation — printing a warning that reads
+  // like a missing distribution rather than a stale cache nobody was clearing.
+  const distribution = listed.DistributionList?.Items?.find(
+    (d) => d.DomainName === domain || (d.Aliases?.Items ?? []).includes(domain),
+  );
 
   if (!distribution?.Id) {
     console.log(yellow(`  could not find the distribution for ${domain} — skipping invalidation`));
