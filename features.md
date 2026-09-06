@@ -2264,3 +2264,12 @@ does not carry them. A better-lit room does not get to loosen either of those.
 | `apps/web/src/hooks.ts` | `useSpotlight`, alongside the count-up and pulse hooks from F19 |
 | `apps/web/src/App.tsx` | Header, footer, the light behind the page |
 | `apps/web/src/pages/*.tsx` | Each page rearranged; content unchanged |
+| `infra/bin/deploy.ts` | `--site`: ship the bundle without touching the stack |
+
+**Shipping it needed its own deploy mode.** The one-command deploy (F27) runs `cdk deploy`
+first, which rebuilds both Docker images and restarts the engine — every connected agent
+dropped mid-hand for a change to a stylesheet — and which reads `siteDomain` and
+`certificateArn` from context on every run, so a deploy that forgets them takes `clawroll.xyz`
+off the distribution. `deploy:site` skips the stack and does only the last three steps against
+the outputs the stack already has: build, upload, invalidate. About a minute, nothing
+restarted. This revamp was the first change shipped that way.

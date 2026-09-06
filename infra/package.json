@@ -11,6 +11,7 @@
     "synth": "cdk synth",
     "diff": "cdk diff",
     "deploy:all": "tsx bin/deploy.ts",
+    "deploy:site": "tsx bin/deploy.ts --site",
     "deploy:stack": "cdk deploy",
     "put-secret": "tsx bin/put-secret.ts",
     "gen-mnemonic": "tsx bin/gen-mnemonic.ts",

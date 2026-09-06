@@ -20,6 +20,11 @@
  * already a transitive dependency of CDK, speaks the same credential chain, and has no Python
  * anywhere in it. One less thing between a working checkout and a running site.
  *
+ * ## `--site`
+ *
+ * Skips the stack and ships only the spectator bundle: build, upload, invalidate. See
+ * `deploySite` for why that is its own mode rather than a flag on the full one.
+ *
  * ## What it deliberately does not do
  *
  * It does not write the master seed, and it does not fund the treasury. Both need a human:
@@ -60,7 +65,7 @@ function run(command: string, args: string[], cwd = ROOT): void {
  * pushed layers, and left a stack mid-update. These three checks take about a second between
  * them and cover the failures that actually happen.
  */
-async function preflight(): Promise<string> {
+async function preflight(needDocker: boolean): Promise<string> {
   step('Preflight');
 
   let account: string;
@@ -77,12 +82,14 @@ async function preflight(): Promise<string> {
   console.log(`  account   ${account}`);
   console.log(`  region    ${REGION}`);
 
-  try {
-    execFileSync('docker', ['info'], { stdio: 'ignore' });
-  } catch {
-    throw new Error('Docker is not running. CDK builds the engine and worker images during deploy.');
+  if (needDocker) {
+    try {
+      execFileSync('docker', ['info'], { stdio: 'ignore' });
+    } catch {
+      throw new Error('Docker is not running. CDK builds the engine and worker images during deploy.');
+    }
+    console.log('  docker    running');
   }
-  console.log('  docker    running');
 
   // The public devnet RPC is rate-limited, and a throttled scanner misses deposits silently
   // rather than failing loudly — money lands on chain and nobody is credited. Worth a warning
@@ -193,8 +200,45 @@ async function invalidate(siteUrl: string): Promise<void> {
   console.log(`  invalidated /index.html on ${distribution.Id}`);
 }
 
+/**
+ * Ship the spectator app and nothing else.
+ *
+ * Most changes to the site are changes to the site. Running the full deploy for one of them
+ * rebuilds two Docker images and restarts the engine — dropping every live agent mid-hand —
+ * and, worse, needs `-c siteDomain=… -c certificateArn=…` passed again, because the stack
+ * reads them from context on every deploy: forget them once and the distribution loses its
+ * domain. `--site` skips the stack entirely and does the last three steps against the
+ * outputs the stack already has.
+ */
+async function deploySite(): Promise<void> {
+  await preflight(false);
+
+  step('Reading stack outputs');
+  const outputs = await stackOutputs();
+  const bucket = outputs['SiteBucketName'];
+  const siteUrl = outputs['SiteUrl'];
+  if (!bucket) throw new Error('SiteBucketName is missing from the stack outputs — has the stack been deployed?');
+  console.log(`  bucket    ${bucket}`);
+  console.log(`  site      ${siteUrl ?? '(no SiteUrl output)'}`);
+
+  step('Building the spectator app');
+  run('pnpm', ['--filter', '@clawroll/web', 'build']);
+
+  step('Uploading the spectator app');
+  await uploadSite(bucket);
+
+  step('Invalidating the CDN');
+  if (siteUrl) await invalidate(siteUrl);
+
+  console.log(`\n${green(bold('Site deployed.'))}`);
+  console.log(`  spectator   ${siteUrl ?? '(no SiteUrl output)'}`);
+  console.log(dim('  The engine and worker were not touched. Run without --site to deploy the stack.'));
+}
+
 async function main(): Promise<void> {
-  await preflight();
+  if (process.argv.includes('--site')) return deploySite();
+
+  await preflight(true);
 
   step('Deploying the stack');
   console.log(dim('  Docker images are built and pushed as part of this — expect several minutes.\n'));

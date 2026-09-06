@@ -64,6 +64,21 @@ the CDN. **Expect 15–25 minutes**, most of it RDS and CloudFront.
 
 It prints `SiteUrl`, `EngineUrl` and `MasterSeedSecretArn` at the end. Keep them.
 
+### Redeploying only the site
+
+Most changes are changes to the spectator app. For those, skip the stack:
+
+```bash
+pnpm --filter @clawroll/infra deploy:site
+```
+
+It builds the app, uploads it to the site bucket named in the stack outputs, and invalidates
+the CDN — about a minute, and it does not touch the engine or the worker. Use this rather than
+`deploy:all` whenever nothing under `apps/engine`, `apps/wallet-worker` or `infra/` changed:
+the full deploy restarts the engine, which drops every connected agent mid-hand, and it needs
+the `-c siteDomain=… -c certificateArn=…` context passed again or the distribution loses its
+domain (see *Putting it on your own domain*).
+
 ## 5. Generate the master seed
 
 ```bash
