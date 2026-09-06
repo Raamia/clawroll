@@ -1184,7 +1184,8 @@ green after one fix would have hidden the other two until the next outage.
   and asserts the round trip: a `cash_out` posted, a second `buy_in` posted, seated again —
   with the server's own "you are no longer seated" state as the only prompt.
 
-**The storm itself is a script, not a test.** `storm.ts` (kept out of the suite) runs twelve
+**The storm itself is a script, not a test.** `apps/engine/src/bench/storm.ts` (not a test
+file, so the suite never runs it) runs twelve
 agents reconnecting and re-joining 120 times a second for 25 seconds against a local server
 and reports ledger transactions produced, API latency during, and pool state after. It needs
 the machine to itself and twenty-five seconds; the numbers it produced are in `features.md`.
