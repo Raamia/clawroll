@@ -1,8 +1,10 @@
-import { useState } from 'react';
+import { useState, type CSSProperties } from 'react';
 import { shortId, usdc, type HandSummary } from '../api';
 import { Cards } from '../components/Cards';
 import { Avatar } from '../components/Avatar';
 import { PokerTable, type PodView, type TableView } from '../components/Table';
+import { Frame, Crumbs } from '../components/Frame';
+import { Reveal, Words } from '../components/Reveal';
 import { useLiveRoom, type Decorated } from '../live';
 import { timeAgo } from '../ui';
 
@@ -21,25 +23,47 @@ export function Tables({ onOpenHand }: { onOpenHand: (handId: string) => void })
   const table = ordered.find((t) => t.tableId === selected) ?? ordered[0] ?? null;
   const seated = table?.seats.filter((s) => s.status !== 'empty' && s.playerId).length ?? 0;
 
+  const toTable = (event: React.MouseEvent) => {
+    // A plain `#table` href would be read as a route and scroll the page to the top.
+    event.preventDefault();
+    document.getElementById('table')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  };
+
   return (
     <>
-      <div className="controls" style={{ marginTop: 34, justifyContent: 'space-between' }}>
-        <div>
-          <h1 style={{ margin: 0 }}>The room</h1>
-          <p className="lede" style={{ margin: '8px 0 0' }}>
-            Agents playing No-Limit Hold&rsquo;em, live. Hole cards stay face down until
-            showdown — the public feed never carries them, so nobody watching can see what a
-            live player holds.
-          </p>
+      <section className="hero">
+        <span className="badge" style={{ '--i': 0 } as CSSProperties}>
+          <b className={connected ? 'tag live' : 'tag'}>{connected ? 'Live' : 'Offline'}</b>
+          The room · No-Limit Hold&rsquo;em · six-max
+        </span>
+        <h1 className="display">
+          <Words text="Poker, played by" />{' '}
+          <span className="grad">
+            <Words text="autonomous agents." from={3} />
+          </span>
+        </h1>
+        <p className="hero-lede" style={{ '--i': 6 } as CSSProperties}>
+          Agents playing No-Limit Hold&rsquo;em, live. Hole cards stay face down until showdown
+          — the public feed never carries them, so nobody watching can see what a live player
+          holds.
+        </p>
+        <div className="hero-actions" style={{ '--i': 7 } as CSSProperties}>
+          <a className="btn primary lg" href="#table" onClick={toTable}>
+            Watch the table
+            <ArrowDown />
+          </a>
+          <a className="btn ghost lg" href="#/verify">
+            Verify a hand
+          </a>
         </div>
+      </section>
+
+      <div className="table-head" id="table">
         <span className="live">
           <span className={connected ? 'dot' : 'dot off'} />
           {connected ? 'live' : 'reconnecting…'}
         </span>
-      </div>
-
-      {ordered.length > 1 && (
-        <div className="controls" style={{ margin: '22px 0 4px' }}>
+        {ordered.length > 1 && (
           <div className="segmented" role="tablist" aria-label="Tables">
             {ordered.map((t) => {
               const players = t.seats.filter((s) => s.status !== 'empty' && s.playerId).length;
@@ -60,66 +84,115 @@ export function Tables({ onOpenHand }: { onOpenHand: (handId: string) => void })
               );
             })}
           </div>
-        </div>
-      )}
+        )}
+      </div>
 
       {table ? (
-        <>
+        <Frame
+          title={<Crumbs parts={['clawroll', 'live table', table.tableId]} />}
+          status={connected ? 'live' : 'reconnecting'}
+          live={connected}
+          foot={
+            <div className="table-strip">
+              <div className="strip-item">
+                <span className="k">Blinds</span>
+                <span className="v">
+                  {usdc(table.smallBlind)} / {usdc(table.bigBlind)}
+                </span>
+              </div>
+              <div className="strip-item">
+                <span className="k">Seated</span>
+                <span className="v">
+                  {seated} of {table.seats.length}
+                </span>
+              </div>
+              <div className="strip-item">
+                <span className="k">Chips in play</span>
+                <span className="v">{usdc(table.seats.reduce((total, s) => total + s.stack, 0))}</span>
+              </div>
+              <div className="strip-item">
+                <span className="k">Hands watched</span>
+                <span className="v">{table.handsSeen}</span>
+              </div>
+              {table.handId && (
+                <a className="btn sm" style={{ marginLeft: 'auto' }} href={`#/verify/${table.handId}`}>
+                  Verify this hand
+                </a>
+              )}
+            </div>
+          }
+        >
+          {/* A new hand id mounts a new element, which is what replays the sweep. */}
+          <div className="scan" key={table.handId ?? 'idle'} aria-hidden />
           <PokerTable view={toView(table)} />
-          <div className="table-strip">
-            <div className="strip-item">
-              <span className="k">Blinds</span>
-              <span className="v">
-                {usdc(table.smallBlind)} / {usdc(table.bigBlind)}
-              </span>
-            </div>
-            <div className="strip-item">
-              <span className="k">Seated</span>
-              <span className="v">
-                {seated} of {table.seats.length}
-              </span>
-            </div>
-            <div className="strip-item">
-              <span className="k">Chips in play</span>
-              <span className="v">
-                {usdc(table.seats.reduce((total, s) => total + s.stack, 0))}
-              </span>
-            </div>
-            <div className="strip-item">
-              <span className="k">Hands watched</span>
-              <span className="v">{table.handsSeen}</span>
-            </div>
-            {table.handId && (
-              <a className="btn sm" style={{ marginLeft: 'auto' }} href={`#/verify/${table.handId}`}>
-                Verify this hand
-              </a>
-            )}
-          </div>
-        </>
+        </Frame>
       ) : (
-        <div className="table-stage">
-          <div className="felt" />
-        </div>
+        <Frame title={<Crumbs parts={['clawroll', 'live table']} />} status="connecting">
+          <div className="table-stage">
+            <div className="felt" />
+          </div>
+        </Frame>
       )}
 
-      <h2>Just finished</h2>
-      {recent.length === 0 ? (
-        <div className="empty">No hands played yet.</div>
-      ) : (
-        <div className="rows">
-          {recent.slice(0, 10).map((hand) => (
-            <HandRow key={hand.handId} hand={hand} onOpen={onOpenHand} />
-          ))}
+      <div className="marquee" aria-hidden>
+        <div className="marquee-track">
+          {[0, 1].map((copy) =>
+            GUARANTEES.map((item) => (
+              <span key={`${copy}-${item}`} className="marquee-item">
+                <i>♠</i>
+                {item}
+              </span>
+            )),
+          )}
         </div>
-      )}
+      </div>
+
+      <Reveal as="section">
+        <div className="section-head">
+          <span className="eyebrow">Archive</span>
+          <h2>Just finished</h2>
+        </div>
+        {recent.length === 0 ? (
+          <div className="empty">No hands played yet.</div>
+        ) : (
+          <div className="rows stagger">
+            {recent.slice(0, 10).map((hand, i) => (
+              <HandRow key={hand.handId} hand={hand} index={i} onOpen={onOpenHand} />
+            ))}
+          </div>
+        )}
+      </Reveal>
     </>
   );
 }
 
-function HandRow({ hand, onOpen }: { hand: HandSummary; onOpen: (handId: string) => void }) {
+/** The room's claims, in the order they are made elsewhere on the site. */
+const GUARANTEES = [
+  'Shuffle committed before the deal',
+  'Every hand published',
+  'Independent verifier',
+  'No live hole cards on the feed',
+  'Devnet USDC only',
+  'Zero rake',
+];
+
+function HandRow({
+  hand,
+  index,
+  onOpen,
+}: {
+  hand: HandSummary;
+  index: number;
+  onOpen: (handId: string) => void;
+}) {
   const winner = hand.winners[0];
   return (
-    <a className="row hand-row" href={`#/hand/${hand.handId}`} onClick={() => onOpen(hand.handId)}>
+    <a
+      className="row hand-row"
+      href={`#/hand/${hand.handId}`}
+      onClick={() => onOpen(hand.handId)}
+      style={{ '--i': index } as CSSProperties}
+    >
       <span className="mono faint when">{timeAgo(hand.endedAt)}</span>
       <span className="board-cell">
         {hand.board ? (
@@ -132,15 +205,17 @@ function HandRow({ hand, onOpen }: { hand: HandSummary; onOpen: (handId: string)
         {winner ? (
           <>
             <Avatar id={winner.agentId} size="sm" />
-            <span className="ellipsis muted name">{shortId(winner.agentId, 20)}</span>
+            <span className="ellipsis name">{shortId(winner.agentId, 20)}</span>
           </>
         ) : (
           <span className="faint">—</span>
         )}
       </span>
-      <span className="num pot-cell">{usdc(hand.potTotal)}</span>
-      <span className="faint chev" aria-hidden>
-        ›
+      <span className="num pot-cell">
+        {usdc(hand.potTotal)} <small className="faint">USDC</small>
+      </span>
+      <span className="chev" aria-hidden>
+        <ArrowRight />
       </span>
     </a>
   );
@@ -175,4 +250,20 @@ function toView(table: Decorated): TableView {
     awards: table.awards,
     label: table.tableId,
   };
+}
+
+function ArrowDown() {
+  return (
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <path d="M8 3v10M4 9l4 4 4-4" />
+    </svg>
+  );
+}
+
+export function ArrowRight() {
+  return (
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <path d="M3 8h10M9 4l4 4-4 4" />
+    </svg>
+  );
 }

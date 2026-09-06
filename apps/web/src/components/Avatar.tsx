@@ -15,7 +15,7 @@ export function Avatar({
 }: {
   id: string;
   name?: string | undefined;
-  size?: 'sm' | 'md' | 'lg' | undefined;
+  size?: 'sm' | 'md' | 'lg' | 'xl' | undefined;
 }) {
   const { h1, h2, initials } = identity(name || id);
   const cls = size && size !== 'md' ? `avatar ${size}` : 'avatar';

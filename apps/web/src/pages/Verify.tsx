@@ -1,5 +1,7 @@
 import { useEffect, useState, type CSSProperties, type ReactNode } from 'react';
 import { api } from '../api';
+import { Frame, Crumbs } from '../components/Frame';
+import { Reveal, Words } from '../components/Reveal';
 import { useCopy } from '../hooks';
 
 /**
@@ -58,27 +60,37 @@ export function Verify({ handId }: { handId: string | null }) {
 
   return (
     <>
-      <h1>Verify a hand</h1>
-      <p className="lede">
-        Every hand is dealt from a shuffle the server committed to before it knew anything —
-        and published the seed for afterwards. Here is the proof. Check it yourself.
-      </p>
+      <section className="page-head">
+        <div>
+          <span className="eyebrow" style={{ '--i': 0 } as CSSProperties}>
+            Provably fair
+          </span>
+          <h1 className="display sm">
+            <Words text="Verify a hand" from={1} />
+          </h1>
+          <p className="lede" style={{ '--i': 4 } as CSSProperties}>
+            Every hand is dealt from a shuffle the server committed to before it knew anything —
+            and published the seed for afterwards. Here is the proof. Check it yourself.
+          </p>
+        </div>
+      </section>
 
-      <div className="controls" style={{ marginBottom: 20 }}>
+      <div className="search" style={{ '--i': 5 } as CSSProperties}>
+        <SearchIcon />
         <input
           className="field"
-          style={{ flex: 1, minWidth: 280 }}
           placeholder="hand id"
           value={id}
           onChange={(e) => setId(e.target.value)}
           onKeyDown={(e) => e.key === 'Enter' && void load(id)}
+          aria-label="Hand id"
         />
         <button className="btn primary" onClick={() => void load(id)} disabled={!id.trim() || loading}>
           {loading ? 'Fetching…' : 'Fetch proof'}
         </button>
       </div>
 
-      <div className="note">
+      <div className="note" style={{ '--i': 6 } as CSSProperties}>
         <strong>We deliberately do not show you a green tick.</strong> A verification result
         rendered by this website would be worth nothing — the page is served by us, and anyone
         willing to rig a deal would be willing to print a checkmark. Run the command below on
@@ -87,56 +99,79 @@ export function Verify({ handId }: { handId: string | null }) {
       </div>
 
       {error && <div className="empty">Could not load proof: {error}</div>}
-      {loading && <div className="skeleton" style={{ height: 180 }} />}
+      {loading && <div className="skeleton" style={{ height: 180, borderRadius: 18 }} />}
 
       {proof && (
         <>
-          <h2>Check it yourself</h2>
-          <code className="cmd">{command}</code>
-          <p className="muted" style={{ fontSize: 13, marginTop: 10 }}>
-            The verifier lives in this repository at <span className="mono">packages/shuffle</span>{' '}
-            and reimplements the dealing rules independently of the server that dealt the hand —
-            deliberately, so that agreeing with the dealer is evidence rather than a foregone
-            conclusion. It will be <span className="mono">npx clawroll-verify</span> once published.
-          </p>
-          <div className="controls" style={{ marginTop: 12 }}>
-            <button className="btn" onClick={() => copy(command, 'cmd')}>
-              {copied === 'cmd' ? '✓ Copied' : 'Copy command'}
-            </button>
-            <button className="btn" onClick={() => copy(proofJson, 'json')}>
-              {copied === 'json' ? '✓ Copied' : 'Copy proof JSON'}
-            </button>
-            <a className="btn ghost" href={`/api/hands/${id}/proof`} target="_blank" rel="noreferrer">
-              Open raw proof ↗
-            </a>
-            <a className="btn ghost" href={`#/hand/${id}`}>
-              Watch the replay
-            </a>
-          </div>
+          <Reveal as="section">
+            <div className="section-head">
+              <span className="eyebrow">On your machine</span>
+              <h2>Check it yourself</h2>
+            </div>
+            <Frame title={<Crumbs parts={['terminal', 'verify']} />} status="bash" className="frame-code">
+              <code className="cmd">
+                <span className="prompt">$ </span>
+                {command}
+                <span className="cursor" aria-hidden />
+              </code>
+            </Frame>
+            <p className="muted" style={{ fontSize: 13.5, marginTop: 14, maxWidth: '70ch' }}>
+              The verifier lives in this repository at <span className="mono">packages/shuffle</span>{' '}
+              and reimplements the dealing rules independently of the server that dealt the hand —
+              deliberately, so that agreeing with the dealer is evidence rather than a foregone
+              conclusion. It will be <span className="mono">npx clawroll-verify</span> once published.
+            </p>
+            <div className="controls" style={{ marginTop: 14 }}>
+              <button className="btn" onClick={() => copy(command, 'cmd')}>
+                {copied === 'cmd' ? 'Copied' : 'Copy command'}
+              </button>
+              <button className="btn" onClick={() => copy(proofJson, 'json')}>
+                {copied === 'json' ? 'Copied' : 'Copy proof JSON'}
+              </button>
+              <a className="btn ghost" href={`/api/hands/${id}/proof`} target="_blank" rel="noreferrer">
+                Open raw proof ↗
+              </a>
+              <a className="btn ghost" href={`#/hand/${id}`}>
+                Watch the replay
+              </a>
+            </div>
+          </Reveal>
+        </>
+      )}
 
+      <Reveal as="section">
+        <div className="section-head">
+          <span className="eyebrow">How it works</span>
           <h2>What the tool checks</h2>
-          <div className="check-list">
-            {CHECKS.map((check, i) => (
-              <div key={check.title} className="check-item" style={{ '--i': i } as CSSProperties}>
-                <span className="check-num">{i + 1}</span>
-                <span>
-                  <strong>{check.title}</strong>{' '}
-                  <span className="muted">{check.body}</span>
-                </span>
-              </div>
-            ))}
-          </div>
+        </div>
+        <div className="steps stagger">
+          {CHECKS.map((check, i) => (
+            <div key={check.title} className="step spot" style={{ '--i': i } as CSSProperties}>
+              <span className="step-num">0{i + 1}</span>
+              <strong>{check.title}</strong>
+              <span className="muted">{check.body}</span>
+            </div>
+          ))}
+        </div>
+      </Reveal>
 
-          <h2>The proof</h2>
+      {proof && (
+        <Reveal as="section">
+          <div className="section-head">
+            <span className="eyebrow">The record</span>
+            <h2>The proof</h2>
+          </div>
           <p className="lede">
             Everything needed to recompute the deck, and nothing else — no pot, no winner, no
             stacks. The verifier answers one question: was this deal the one the server
             committed to?
           </p>
-          <pre className="proof">
-            <Json text={proofJson} />
-          </pre>
-        </>
+          <Frame title={<Crumbs parts={['proof', `${id.slice(0, 12)}.json`]} />} status="json" className="frame-code">
+            <pre className="proof">
+              <Json text={proofJson} />
+            </pre>
+          </Frame>
+        </Reveal>
       )}
     </>
   );
@@ -194,3 +229,12 @@ const CHECKS = [
     body: 'Dealing that deck — one card at a time from the small blind, burning before each street — must reproduce exactly the hole cards and board that were shown.',
   },
 ];
+
+function SearchIcon() {
+  return (
+    <svg className="search-icon" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden>
+      <circle cx="9" cy="9" r="5.5" />
+      <path d="M13.5 13.5 17 17" />
+    </svg>
+  );
+}

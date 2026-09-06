@@ -1195,6 +1195,45 @@ No test covers the whole outage end to end, and none can: it needs a table to ru
 to one player over days of real play. The four above cover each mechanism that made the outage
 irreversible, which is the part that turns a quiet table into a dead one.
 
+### F31 — The room, relit
+
+**Still no unit tests, for the F19 reason.** The revamp touched presentation only: the pages
+call the same API, fold the same messages, and derive the same view models. What changed is
+markup and CSS, which is the layer a component test can only restate.
+
+**Verified by driving the real thing.** The full stack was run locally (`pnpm dev`: real
+engine, real Postgres, real bots on two tables) and every page opened in a browser at desktop
+width and at 390px:
+
+| Checked | Result |
+| --- | --- |
+| Room | Hero, live light, table switcher, framed felt during a hand, stats strip, marquee, ten finished hands |
+| Replay | Pot headline, framed felt, transport controls stepped with the keyboard, log and result side by side |
+| Leaderboard | Podium with the walking ring on first place, 22 further rows with net bars |
+| Agent | Profile hero, four stat tiles counting up, 30 recent hands |
+| Verify, empty | Search pill, the note, the three checks |
+| Verify, with a proof | Terminal frame with the command, copy buttons, proof frame with the coloured JSON |
+| Phone | No horizontal overflow on any page (`scrollWidth === innerWidth`); seats collapse to a grid as before |
+| Console | No errors on any page |
+| Production build | `tsc --noEmit && vite build` clean |
+| Hole cards on the public feed | Still face down for every live player |
+
+**Three defects found by looking, none of which a test would have named:**
+
+- *Words ran together in every headline.* An inline-block swallows its trailing space. Seen
+  in the first screenshot, invisible in the DOM.
+- *The gradient line of the hero was blank.* `background: inherit` under `background-clip:
+  text` clips to a transparent fill once a wrapper span sits between the gradient and the
+  word. Seen only because the first fix introduced the wrapper.
+- *The action log clipped its verbs on a phone.* A `1fr` grid track will not shrink below its
+  content's min-content width. Seen at 390px, not at 1280.
+
+**One thing worth knowing about the harness.** The browser pane pauses CSS animations while it
+is hidden, so a screenshot taken between actions can catch a page frozen mid-entrance and look
+like a broken layout. Two such captures were chased before the cause was clear; a settled
+capture is taken with animation and transition durations zeroed by an injected style, which is
+a debugging aid and never part of the page.
+
 ## Invariant catalogue
 
 The running list of properties the system must never violate. Each is enforced by an
@@ -1331,3 +1370,5 @@ against live data, because an invariant worth testing is worth monitoring.
 | I126 | A house bot whose spendable balance is below the floor is topped up, whatever it holds on a table | `rebalance.test.ts › tops up a bot whose chips are on the table and whose spendable balance cannot cover a seat` | F30 |
 | I127 | A top-up is funded by spendable balance only; chips on a table are never moved | `rebalance.test.ts › chooses the donor by what it can spend, not by what it holds` | F30 |
 | I128 | Standing up posts a cash-out for the stack and the agent re-seats on its own | `client.test.ts › cashes the stack out and sits straight back down` | F30 |
+| I129 | A page reveals its content without the animation: `Reveal` shows immediately where `IntersectionObserver` is absent, and never re-hides | `Reveal.tsx` — by construction | F31 |
+| I130 | Every animation on the site is neutralised under `prefers-reduced-motion` without changing layout | `styles.css` — the single reduced-motion block | F31 |
